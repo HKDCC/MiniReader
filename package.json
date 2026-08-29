@@ -1,0 +1,42 @@
+{
+  "name": "mini-reader",
+  "private": true,
+  "version": "1.0.3",
+  "description": "Mini Reader - EPUB/PDF/TXT reader",
+  "author": "Tech-Linguist Lab",
+  "main": "dist_electron/main.js",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf dist && rm -rf dist_electron && rm -rf release",
+    "lint": "tsc --noEmit",
+    "electron:dev": "npm run electron:build && electron .",
+    "electron:build": "node scripts/build-electron.mjs && vite build",
+    "electron:dist": "npm run electron:build && electron-builder --win --config electron-builder.json"
+  },
+  "dependencies": {
+    "dexie": "^4.3.0",
+    "dexie-react-hooks": "^4.2.0",
+    "docx": "^9.6.1",
+    "epubjs": "^0.3.93",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "pdfjs-dist": "^5.5.207",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-pdf": "^10.4.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "electron": "41.1.1",
+    "electron-builder": "^26.8.1",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

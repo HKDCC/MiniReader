@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Mini Reader logo preview</title>
+  <desc id="desc">A minimal, tactile open book mark in black, white and MUJI red.</desc>
+
+  <!-- A light, floating book: white is the visual mass; black is only the contour. -->
+  <path d="M111 190c0-28 22-50 50-50h85c22 0 40 7 54 22v211c-14-15-32-22-54-22h-85c-28 0-50-22-50-50V190Z" fill="#000000"/>
+  <path d="M401 190c0-28-22-50-50-50h-85c-22 0-40 7-54 22v211c14-15 32-22 54-22h85c28 0 50-22 50-50V190Z" fill="#000000"/>
+
+  <!-- White pages sit forward of the black back cover, creating a simple physical offset. -->
+  <path d="M102 178c0-28 22-50 50-50h85c22 0 40 7 54 22v211c-14-15-32-22-54-22h-85c-28 0-50-22-50-50V178Z" fill="#FFFFFF" stroke="#000000" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M410 178c0-28-22-50-50-50h-85c-22 0-40 7-54 22v211c14-15 32-22 54-22h85c28 0 50-22 50-50V178Z" fill="#FFFFFF" stroke="#000000" stroke-width="8" stroke-linejoin="round"/>
+
+  <!-- Quiet page marks: enough to say “reader”, without becoming decoration. -->
+  <path d="M137 208h104M137 245h72M137 282h104M375 208H271M375 245h-72M375 282H271" fill="none" stroke="#000000" stroke-width="8" stroke-linecap="round"/>
+
+  <!-- Red bookmark is inset into the white page instead of sitting on a dark field. -->
+  <path d="M306 115h54v176l-27-25-27 25V115Z" fill="#A6192E"/>
+  <path d="M306 115h54" stroke="#000000" stroke-width="8"/>
+
+  <!-- Binding crease and a small grounding mark complete the tactile silhouette. -->
+  <path d="M256 153v211" stroke="#000000" stroke-width="12" stroke-linecap="round"/>
+  <path d="M190 414h132" stroke="#000000" stroke-width="8" stroke-linecap="round"/>
+</svg>
