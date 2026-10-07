@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef, useMemo, useCallback } from 'react';
 import { Theme } from '../App';
 import { Note } from '../db/db';
+import type { ReaderLocationChange, ReaderPageInfo } from './readerTypes';
+import { getReaderFontStack } from '../shared/fonts';
 
 interface TxtViewerRef {
   next: () => void;
   prev: () => void;
   goTo: (href: string) => void;
+  seekToProgress: (progress: number) => void;
+  search: (query: string, direction?: number) => boolean;
   clearSelection: () => void;
 }
 
@@ -19,7 +23,7 @@ interface TxtViewerProps {
   isTwoPage?: boolean;
   initialCfi?: string;
   notes: Note[];
-  onLocationChange: (percentage: number, cfi: string) => void;
+  onLocationChange: ReaderLocationChange;
   onTextSelected: (selection: { cfiRange: string, text: string, x: number, y: number } | null) => void;
   onKeyPress?: (key: string) => void;
   onReady: () => void;
@@ -51,12 +55,64 @@ function renderHighlightedText(text: string, color: string) {
   });
 }
 
+function measureColumnCount(element: HTMLElement, containerWidth: number, actualTwoPage: boolean) {
+  if (!actualTwoPage) {
+    return Math.max(1, Math.round(element.scrollWidth / Math.max(1, containerWidth)));
+  }
+
+  const gap = 48;
+  const columnWidth = Math.max(1, containerWidth / 2 - 24);
+  return Math.max(1, Math.round((element.scrollWidth + gap) / (columnWidth + gap)));
+}
+
+function lastPageStart(columnCount: number, step: number) {
+  return Math.floor(Math.max(0, columnCount - 1) / step) * step;
+}
+
+function createTextMeasureElement({
+  containerWidth,
+  containerHeight,
+  actualTwoPage,
+  fontSize,
+  lineHeight,
+  fontFamily,
+}: {
+  containerWidth: number;
+  containerHeight: number;
+  actualTwoPage: boolean;
+  fontSize: number;
+  lineHeight: number;
+  fontFamily: string;
+}) {
+  const element = document.createElement('div');
+  Object.assign(element.style, {
+    position: 'fixed',
+    left: '-100000px',
+    top: '0',
+    visibility: 'hidden',
+    pointerEvents: 'none',
+    width: `${containerWidth}px`,
+    height: `${containerHeight}px`,
+    overflow: 'visible',
+    columnWidth: actualTwoPage ? `${Math.max(1, containerWidth / 2 - 24)}px` : `${containerWidth}px`,
+    columnGap: actualTwoPage ? '48px' : '0px',
+    fontSize: `${fontSize}px`,
+    lineHeight: String(lineHeight),
+    fontFamily: getReaderFontStack(fontFamily),
+    whiteSpace: 'pre-wrap',
+    textAlign: 'justify',
+    paddingBottom: '2rem',
+  });
+  return element;
+}
+
 const TxtViewer = forwardRef<TxtViewerRef, TxtViewerProps>(({
-  text, theme, currentTheme, fontSize, lineHeight, fontFamily = 'Noto Serif SC', isTwoPage = false, initialCfi, notes, onLocationChange, onTextSelected, onKeyPress, onReady, onTocLoaded
+  text, theme, currentTheme, fontSize, lineHeight, fontFamily = 'Source Han Serif SC', isTwoPage = false, initialCfi, notes, onLocationChange, onTextSelected, onKeyPress, onReady, onTocLoaded
 }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(0);
   
   const [chunkIndex, setChunkIndex] = useState(() => {
     if (initialCfi && initialCfi.startsWith('txt-')) {
@@ -73,7 +129,12 @@ const TxtViewer = forwardRef<TxtViewerRef, TxtViewerProps>(({
   });
   
   const [columnsInChunk, setColumnsInChunk] = useState(1);
+  const [chunkColumnCounts, setChunkColumnCounts] = useState<number[] | null>(null);
+  const pendingSeekProgressRef = useRef<number | null>(null);
   const [isReady, setIsReady] = useState(false);
+  const fontMetricKey = fontFamily === 'LXGW WenKai' ? `${fontFamily}:${fontSize}` : 'system';
+  const [settledFontKey, setSettledFontKey] = useState(() => fontFamily === 'LXGW WenKai' ? '' : 'system');
+  const fontMetricsReady = fontFamily !== 'LXGW WenKai' || settledFontKey === fontMetricKey;
 
   const chunks = useMemo(() => {
     const result = [];
@@ -116,11 +177,33 @@ const TxtViewer = forwardRef<TxtViewerRef, TxtViewerProps>(({
     return result;
   }, [text]);
 
+  const chunkStartOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let total = 0;
+    chunks.forEach((chunk) => {
+      offsets.push(total);
+      total += chunk.length;
+    });
+    return offsets;
+  }, [chunks]);
+
+  const pageOffsets = useMemo(() => {
+    if (!chunkColumnCounts) return null;
+    const offsets: number[] = [];
+    let total = 0;
+    chunkColumnCounts.forEach((count) => {
+      offsets.push(total);
+      total += count;
+    });
+    return { offsets, total };
+  }, [chunkColumnCounts]);
+
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new ResizeObserver((entries) => {
       for (let entry of entries) {
         setContainerWidth(entry.contentRect.width);
+        setContainerHeight(entry.contentRect.height);
       }
     });
     observer.observe(containerRef.current);
@@ -130,17 +213,148 @@ const TxtViewer = forwardRef<TxtViewerRef, TxtViewerProps>(({
   const actualTwoPage = isTwoPage && containerWidth > 600;
 
   useEffect(() => {
+    if (fontFamily !== 'LXGW WenKai') return;
+    let cancelled = false;
+    const key = `${fontFamily}:${fontSize}`;
+    void document.fonts.load(`${fontSize}px "LXGW WenKai"`)
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setSettledFontKey(key);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fontFamily, fontSize]);
+
+  const applyProgressSeek = useCallback((normalized: number, measuredCounts: number[] | null) => {
+    if (chunks.length === 0) return;
+    const targetOffset = Math.round(normalized * Math.max(0, text.length - 1));
+    let targetChunk = chunks.length - 1;
+    for (let index = 0; index < chunks.length; index += 1) {
+      if (targetOffset < (chunkStartOffsets[index] || 0) + chunks[index].length || index === chunks.length - 1) {
+        targetChunk = index;
+        break;
+      }
+    }
+
+    let columnCount = measuredCounts?.[targetChunk];
+    if (!columnCount) {
+      const element = createTextMeasureElement({
+        containerWidth,
+        containerHeight: containerHeight || containerRef.current?.clientHeight || 1,
+        actualTwoPage,
+        fontSize,
+        lineHeight,
+        fontFamily,
+      });
+      element.textContent = chunks[targetChunk];
+      document.body.appendChild(element);
+      columnCount = measureColumnCount(element, containerWidth, actualTwoPage);
+      element.remove();
+    }
+
+    const localOffset = Math.max(0, targetOffset - (chunkStartOffsets[targetChunk] || 0));
+    const step = actualTwoPage ? 2 : 1;
+    const maxStart = lastPageStart(columnCount, step);
+    const rawColumn = Math.floor((localOffset / Math.max(1, chunks[targetChunk].length)) * columnCount);
+    const targetColumn = Math.min(maxStart, Math.floor(rawColumn / step) * step);
+
+    setChunkIndex(targetChunk);
+    setColumnIndex(targetColumn);
+  }, [actualTwoPage, chunkStartOffsets, chunks, containerHeight, containerWidth, fontFamily, fontSize, lineHeight, text.length]);
+
+  useEffect(() => {
+    const pendingProgress = pendingSeekProgressRef.current;
+    if (pendingProgress === null || !chunkColumnCounts || !fontMetricsReady) return;
+    pendingSeekProgressRef.current = null;
+    applyProgressSeek(pendingProgress, chunkColumnCounts);
+  }, [applyProgressSeek, chunkColumnCounts, fontMetricsReady]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || containerWidth <= 0 || chunks.length === 0) return;
+
+    setChunkColumnCounts(null);
+    const measureElement = createTextMeasureElement({
+      containerWidth,
+      containerHeight: containerHeight || container.clientHeight,
+      actualTwoPage,
+      fontSize,
+      lineHeight,
+      fontFamily,
+    });
+    document.body.appendChild(measureElement);
+
+    const counts = new Array<number>(chunks.length).fill(1);
+    let nextIndex = 0;
+    let cancelled = false;
+    let timeoutId: number | null = null;
+    let idleCallbackId: number | null = null;
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: (deadline: { timeRemaining: () => number }) => void, options?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+
+    const measureBatch = (deadline?: { timeRemaining: () => number }) => {
+      if (cancelled) return;
+      const batchStart = performance.now();
+      do {
+        measureElement.textContent = chunks[nextIndex];
+        counts[nextIndex] = measureColumnCount(measureElement, containerWidth, actualTwoPage);
+        nextIndex += 1;
+      } while (
+        nextIndex < chunks.length &&
+        (deadline ? deadline.timeRemaining() > 3 : performance.now() - batchStart < 4)
+      );
+
+      if (nextIndex >= chunks.length) {
+        setChunkColumnCounts(counts);
+        return;
+      }
+
+      if (idleWindow.requestIdleCallback) {
+        idleCallbackId = idleWindow.requestIdleCallback(measureBatch, { timeout: 120 });
+      } else {
+        timeoutId = window.setTimeout(() => measureBatch(), 0);
+      }
+    };
+
+    const scheduleInitialBatch = async () => {
+      if (fontFamily === 'LXGW WenKai') {
+        try {
+          await document.fonts.load(`${fontSize}px "LXGW WenKai"`);
+        } catch {
+          // Keep measuring with the system fallback if the bundled font cannot load.
+        }
+      }
+      if (cancelled) return;
+      if (idleWindow.requestIdleCallback) {
+        idleCallbackId = idleWindow.requestIdleCallback(measureBatch, { timeout: 120 });
+      } else {
+        timeoutId = window.setTimeout(() => measureBatch(), 0);
+      }
+    };
+    void scheduleInitialBatch();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      if (idleCallbackId !== null) idleWindow.cancelIdleCallback?.(idleCallbackId);
+      measureElement.remove();
+    };
+  }, [actualTwoPage, chunks, containerHeight, containerWidth, fontFamily, fontSize, lineHeight]);
+
+  useEffect(() => {
     if (!contentRef.current || containerWidth === 0) return;
     
     const timeoutId = setTimeout(() => {
       if (!contentRef.current) return;
-      const scrollWidth = contentRef.current.scrollWidth;
-      const cols = Math.max(1, Math.round(scrollWidth / containerWidth));
+      const cols = measureColumnCount(contentRef.current, containerWidth, actualTwoPage);
       setColumnsInChunk(cols);
       
       let newColIndex = columnIndex;
       if (columnIndex === -1 || columnIndex >= cols) {
-        newColIndex = cols - 1;
+        newColIndex = lastPageStart(cols, actualTwoPage ? 2 : 1);
         setColumnIndex(newColIndex);
       }
       
@@ -150,23 +364,30 @@ const TxtViewer = forwardRef<TxtViewerRef, TxtViewerProps>(({
       }
 
       // Character position based percentage: chunkIndex*CHUNK_SIZE + newColIndex*(CHUNK_SIZE/cols)
-      const chunkStart = chunks.slice(0, chunkIndex).reduce((total, chunk) => total + chunk.length, 0);
+      const chunkStart = chunkStartOffsets[chunkIndex] || 0;
       const currentChunkLength = chunks[chunkIndex]?.length || 0;
       const colChars = currentChunkLength / Math.max(1, cols);
       const isLastColumn = chunkIndex === chunks.length - 1 && newColIndex >= cols - (actualTwoPage ? 2 : 1);
       const currentCharPos = isLastColumn ? text.length : chunkStart + newColIndex * colChars;
       const progress = Math.min(100, Math.round((currentCharPos / Math.max(1, text.length)) * 100));
-      onLocationChange(progress, `txt-${chunkIndex}-${newColIndex}`);
+      const pageInfo: ReaderPageInfo | undefined = pageOffsets && chunkColumnCounts && pageOffsets.offsets[chunkIndex] !== undefined
+        ? {
+            current: Math.min(pageOffsets.total, pageOffsets.offsets[chunkIndex] + newColIndex + 1),
+            total: pageOffsets.total,
+          }
+        : undefined;
+      onLocationChange(progress, `txt-${chunkIndex}-${newColIndex}`, pageInfo);
     }, 50);
     
     return () => clearTimeout(timeoutId);
-  }, [chunkIndex, columnIndex, containerWidth, fontSize, lineHeight, chunks, isReady, onReady, onLocationChange, text.length]);
+  }, [chunkIndex, columnIndex, containerHeight, containerWidth, fontSize, lineHeight, chunks, isReady, onReady, onLocationChange, text.length, actualTwoPage, chunkStartOffsets, chunkColumnCounts, pageOffsets]);
 
   useImperativeHandle(ref, () => ({
     next: () => {
       setColumnIndex(c => {
         const step = actualTwoPage ? 2 : 1;
-        if (c < columnsInChunk - step) return c + step;
+        const nextColumn = c + step;
+        if (nextColumn < columnsInChunk) return nextColumn;
         if (chunkIndex < chunks.length - 1) {
           setChunkIndex(chunkIndex + 1);
           return 0;
@@ -188,6 +409,39 @@ const TxtViewer = forwardRef<TxtViewerRef, TxtViewerProps>(({
     goTo: (href: string) => {
       // TxtViewer doesn't have TOC
     },
+    seekToProgress: (progress: number) => {
+      if (chunks.length === 0) return;
+      const normalized = Number.isFinite(progress) ? Math.min(1, Math.max(0, progress)) : 0;
+      if (containerWidth <= 0 || !fontMetricsReady) {
+        pendingSeekProgressRef.current = normalized;
+        return;
+      }
+      pendingSeekProgressRef.current = null;
+      applyProgressSeek(normalized, chunkColumnCounts);
+    },
+    search: (query: string, direction = 1) => {
+      const needle = query.trim().toLocaleLowerCase();
+      if (!needle) return false;
+      const source = text.toLocaleLowerCase();
+      const chunkStart = chunkStartOffsets[chunkIndex] || 0;
+      const currentOffset = chunkStart + Math.max(0, columnIndex) * ((chunks[chunkIndex]?.length || 0) / Math.max(1, columnsInChunk));
+      let match = direction >= 0 ? source.indexOf(needle, currentOffset + 1) : source.lastIndexOf(needle, Math.max(0, currentOffset - 1));
+      if (match < 0) match = direction >= 0 ? source.indexOf(needle) : source.lastIndexOf(needle);
+      if (match < 0) return false;
+
+      let targetChunk = 0;
+      let targetOffset = match;
+      for (let index = 0; index < chunks.length; index += 1) {
+        if (targetOffset <= chunks[index].length) {
+          targetChunk = index;
+          break;
+        }
+        targetOffset -= chunks[index].length;
+      }
+      setChunkIndex(targetChunk);
+      setColumnIndex(0);
+      return true;
+    },
     clearSelection: () => {
       window.getSelection()?.removeAllRanges();
       onTextSelected(null);
@@ -203,7 +457,8 @@ const TxtViewer = forwardRef<TxtViewerRef, TxtViewerProps>(({
     const step = actualTwoPage ? 2 : 1;
     if (e.deltaY > 0) {
       setColumnIndex(c => {
-        if (c < columnsInChunk - step) return c + step;
+        const nextColumn = c + step;
+        if (nextColumn < columnsInChunk) return nextColumn;
         if (chunkIndex < chunks.length - 1) {
           setChunkIndex(chunkIndex + 1);
           return 0;
@@ -224,7 +479,7 @@ const TxtViewer = forwardRef<TxtViewerRef, TxtViewerProps>(({
     wheelTimeout.current = setTimeout(() => {
       wheelTimeout.current = null;
     }, 200);
-  }, [columnsInChunk, chunkIndex, chunks.length]);
+  }, [actualTwoPage, columnsInChunk, chunkIndex, chunks.length]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -324,14 +579,16 @@ const TxtViewer = forwardRef<TxtViewerRef, TxtViewerProps>(({
       <div
         ref={contentRef}
         style={{
-          columnWidth: containerWidth > 0 ? (actualTwoPage ? `calc(50% - 1.5rem)` : `${containerWidth}px`) : '100%',
+          columnWidth: containerWidth > 0
+            ? (actualTwoPage ? `${Math.max(1, containerWidth / 2 - 24)}px` : `${containerWidth}px`)
+            : '100%',
           columnGap: actualTwoPage ? '3rem' : '0px',
           height: '100%',
           transform: `translateX(-${Math.max(0, columnIndex) * (actualTwoPage ? containerWidth / 2 + 24 : containerWidth)}px)`,
           transition: 'transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1)',
           fontSize: `${fontSize}px`,
           lineHeight: lineHeight,
-          fontFamily: `"${fontFamily}", serif`,
+          fontFamily: getReaderFontStack(fontFamily),
           color: currentTheme.text,
           whiteSpace: 'pre-wrap',
           textAlign: 'justify',

@@ -1,17 +1,19 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Settings, Maximize, Minimize, ArrowLeft, List, StickyNote } from 'lucide-react';
+import { Settings, Maximize, Minimize, ArrowLeft, List, StickyNote, Search, ChevronUp, ChevronDown, X } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Theme } from '../App';
 import { BookMeta, db } from '../db/db';
 import SettingsPanel from './SettingsPanel';
 import NotesPanel from './NotesPanel';
 import TocPanel from './TocPanel';
-import EpubViewer, { EpubViewerRef } from './EpubViewer';
+import type { EpubViewerRef } from './EpubViewer';
 import TxtViewer from './TxtViewer';
-import PdfViewer from './PdfViewer';
+const EpubViewer = lazy(() => import('./EpubViewer'));
+const PdfViewer = lazy(() => import('./PdfViewer'));
 import { readerCopy } from '../shared/copy';
 import { isEditableTarget } from '../shared/dom';
+import type { ReaderPageInfo } from './readerTypes';
 
 export default function Reader({
   book,
@@ -27,11 +29,23 @@ export default function Reader({
   currentTheme: { bg: string; text: string; ui: string };
 }) {
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [progress, setProgress] = useState(book.progress || 0);
+  const [pageInfo, setPageInfo] = useState<ReaderPageInfo | null>(null);
+  const [sliderPreview, setSliderPreview] = useState<number | null>(null);
   const [epubData, setEpubData] = useState<ArrayBuffer | null>(null);
   const [txtData, setTxtData] = useState<string | null>(null);
   const [pdfData, setPdfData] = useState<ArrayBuffer | null>(null);
   const viewerRef = useRef<EpubViewerRef | any>(null);
+  const viewerSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const sliderFocusedRef = useRef(false);
+  const lastLocationRef = useRef<string | null>(null);
+  const fadeAnimationRef = useRef<Animation | null>(null);
+  const sliderInteractionRef = useRef<'pointer' | 'keyboard' | null>(null);
+  const keyboardSeekProgressRef = useRef<number | null>(null);
+  const pendingKeyboardSeekCountRef = useRef(0);
+  const lastKeyboardSeekAtRef = useRef(0);
+  const pendingSliderSeekRef = useRef<{ fromLocation: string | null; timeout: number } | null>(null);
   const leftControlsRef = useRef<HTMLDivElement | null>(null);
   const rightControlsRef = useRef<HTMLDivElement | null>(null);
 
@@ -41,9 +55,14 @@ export default function Reader({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [tocOpen, setTocOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchMessage, setSearchMessage] = useState('');
+  const [searchBusy, setSearchBusy] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [toc, setToc] = useState<any[]>([]);
   const [showHint, setShowHint] = useState(true);
+  const handleViewerReady = useCallback(() => setIsLoading(false), []);
 
   const [fontSize, setFontSize] = useState(() => {
     const value = localStorage.getItem('mr_fontSize');
@@ -57,7 +76,10 @@ export default function Reader({
     const value = localStorage.getItem('mr_margin');
     return value ? Number(value) : 2200;
   });
-  const [fontFamily, setFontFamily] = useState(() => localStorage.getItem('mr_fontFamily') || 'Noto Serif SC');
+  const [fontFamily, setFontFamily] = useState(() => {
+    const saved = localStorage.getItem('mr_fontFamily');
+    return saved === 'SimSun' ? 'Source Han Serif SC' : saved || 'Source Han Serif SC';
+  });
   const [isTwoPage, setIsTwoPage] = useState(() => localStorage.getItem('mr_isTwoPage') !== 'false');
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
 
@@ -101,6 +123,10 @@ export default function Reader({
   useEffect(() => {
     const loadContent = async () => {
       setIsLoading(true);
+      setLoadError(null);
+      setEpubData(null);
+      setTxtData(null);
+      setPdfData(null);
       try {
         const contentRecord = await db.contents.get(book.id);
         if (!contentRecord) {
@@ -116,6 +142,7 @@ export default function Reader({
         }
       } catch (error) {
         console.error('Failed to load content', error);
+        setLoadError('无法加载书籍内容，请重新导入文件。');
         setIsLoading(false);
       }
     };
@@ -123,11 +150,65 @@ export default function Reader({
     loadContent();
   }, [book.id, book.format]);
 
+  useEffect(() => {
+    setProgress(book.progress || 0);
+    setPageInfo(null);
+    setSliderPreview(null);
+    keyboardSeekProgressRef.current = null;
+    pendingKeyboardSeekCountRef.current = 0;
+    lastKeyboardSeekAtRef.current = 0;
+    if (pendingSliderSeekRef.current) window.clearTimeout(pendingSliderSeekRef.current.timeout);
+    pendingSliderSeekRef.current = null;
+    fadeAnimationRef.current?.cancel();
+    fadeAnimationRef.current = null;
+    lastLocationRef.current = null;
+    setToc([]);
+    setSelection(null);
+    setSettingsOpen(false);
+    setNotesOpen(false);
+    setTocOpen(false);
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchMessage('');
+  }, [book.id]);
+
   const handleLocationChange = useCallback(
-    async (percentage: number, cfi: string) => {
+    async (percentage: number, cfi: string, nextPageInfo?: ReaderPageInfo) => {
       const normalizedProgress = percentage > 1 ? percentage : percentage * 100;
       const nextProgress = Number.isNaN(normalizedProgress) ? 0 : Math.min(100, Math.max(0, Math.round(normalizedProgress)));
       setProgress(nextProgress);
+      setPageInfo((previous) => {
+        const next = nextPageInfo ?? null;
+        if (previous?.current === next?.current && previous?.total === next?.total) return previous;
+        return next;
+      });
+      if (pendingKeyboardSeekCountRef.current > 0) {
+        pendingKeyboardSeekCountRef.current -= 1;
+      } else {
+        keyboardSeekProgressRef.current = null;
+      }
+
+      const previousLocation = lastLocationRef.current;
+      lastLocationRef.current = cfi;
+      if (previousLocation && previousLocation !== cfi && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        fadeAnimationRef.current?.cancel();
+        const surface = viewerSurfaceRef.current;
+        if (surface) {
+          fadeAnimationRef.current = surface.animate(
+            [{ opacity: 1 }, { opacity: 0.84, offset: 0.45 }, { opacity: 1 }],
+            { duration: 120, easing: 'ease-out' }
+          );
+        }
+      }
+
+      const pendingSliderSeek = pendingSliderSeekRef.current;
+      if (pendingSliderSeek && cfi !== pendingSliderSeek.fromLocation) {
+        window.clearTimeout(pendingSliderSeek.timeout);
+        pendingSliderSeekRef.current = null;
+        setSliderPreview(null);
+      } else if (!pendingSliderSeek && sliderInteractionRef.current === null) {
+        setSliderPreview(null);
+      }
       await db.books.update(book.id, {
         progress: nextProgress,
         cfi,
@@ -137,11 +218,43 @@ export default function Reader({
     [book.id]
   );
 
+  const finishSliderSeek = useCallback((value: number, keyboard = false) => {
+    sliderInteractionRef.current = null;
+    const normalized = Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : progress;
+    setSliderPreview(normalized);
+    if (pendingSliderSeekRef.current) window.clearTimeout(pendingSliderSeekRef.current.timeout);
+    const timeout = window.setTimeout(() => {
+      pendingSliderSeekRef.current = null;
+      setSliderPreview(null);
+    }, 1500);
+    pendingSliderSeekRef.current = { fromLocation: lastLocationRef.current, timeout };
+    if (keyboard) {
+      keyboardSeekProgressRef.current = normalized;
+      pendingKeyboardSeekCountRef.current += 1;
+      lastKeyboardSeekAtRef.current = Date.now();
+    } else {
+      keyboardSeekProgressRef.current = null;
+      pendingKeyboardSeekCountRef.current = 0;
+    }
+    viewerRef.current?.seekToProgress(normalized / 100);
+  }, [progress]);
+
+  const cancelSliderSeek = useCallback(() => {
+    sliderInteractionRef.current = null;
+    if (pendingSliderSeekRef.current) window.clearTimeout(pendingSliderSeekRef.current.timeout);
+    pendingSliderSeekRef.current = null;
+    setSliderPreview(null);
+  }, []);
+
   const nextPage = useCallback(() => {
+    keyboardSeekProgressRef.current = null;
+    pendingKeyboardSeekCountRef.current = 0;
     viewerRef.current?.next();
   }, []);
 
   const prevPage = useCallback(() => {
+    keyboardSeekProgressRef.current = null;
+    pendingKeyboardSeekCountRef.current = 0;
     viewerRef.current?.prev();
   }, []);
 
@@ -232,6 +345,12 @@ export default function Reader({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        setSearchOpen(true);
+        setUiVisible(true);
+        return;
+      }
       if (isEditableTarget(event.target)) {
         if (event.key === 'Escape') {
           handleKeyPress(event.key);
@@ -269,7 +388,7 @@ export default function Reader({
         leftRailTimeoutRef.current = window.setTimeout(() => setLeftRailVisible(false), 720);
       }
 
-      if (isNearBottomEdge) {
+      if (isNearBottomEdge || sliderInteractionRef.current !== null || sliderFocusedRef.current) {
         setProgressVisible(true);
         if (progressTimeoutRef.current) {
           window.clearTimeout(progressTimeoutRef.current);
@@ -279,7 +398,9 @@ export default function Reader({
         if (progressTimeoutRef.current) {
           window.clearTimeout(progressTimeoutRef.current);
         }
-        progressTimeoutRef.current = window.setTimeout(() => setProgressVisible(false), 720);
+        progressTimeoutRef.current = window.setTimeout(() => {
+          if (!sliderFocusedRef.current && sliderInteractionRef.current === null) setProgressVisible(false);
+        }, 720);
       }
 
       if (isNearTopEdge || isNearRightEdge) {
@@ -338,6 +459,25 @@ export default function Reader({
     border: `1px solid ${currentTheme.text}${active ? '28' : '12'}`,
     boxShadow: active ? `0 16px 34px ${currentTheme.text}1C` : `0 10px 24px ${currentTheme.text}10`,
   });
+
+  const runSearch = async (direction = 1) => {
+    const query = searchQuery.trim();
+    if (!query) {
+      setSearchMessage('请输入关键词');
+      return;
+    }
+    setSearchBusy(true);
+    try {
+      const result = viewerRef.current?.search?.(query, direction) ?? false;
+      const found = result instanceof Promise ? await result : result;
+      setSearchMessage(found ? '' : '未找到匹配内容');
+    } catch (error) {
+      console.warn('Search failed', error);
+      setSearchMessage('搜索失败');
+    } finally {
+      setSearchBusy(false);
+    }
+  };
 
   const viewerMaxWidth = Math.max(720, Math.min(margin, windowWidth - 48));
   const pageHitZoneWidth = windowWidth < 900 ? 24 : windowWidth < 1280 ? 32 : 44;
@@ -415,6 +555,24 @@ export default function Reader({
             className="absolute right-4 top-4 z-40 flex flex-col gap-3"
           >
             <button
+              onClick={() => {
+                setSearchOpen((previous) => !previous);
+                setSettingsOpen(false);
+                setNotesOpen(false);
+                setTocOpen(false);
+              }}
+              className="p-2.5 rounded-xl transition-all"
+              style={{
+                backgroundColor: searchOpen ? `${currentTheme.text}22` : `${currentTheme.ui}CC`,
+                opacity: searchOpen ? 1 : 0.55,
+              }}
+              title="搜索 (Ctrl+F)"
+              aria-label="搜索"
+            >
+              <Search size={16} strokeWidth={1.5} />
+            </button>
+
+            <button
               onClick={toggleFullscreen}
               className="p-2.5 rounded-xl opacity-55 hover:opacity-100 transition-opacity"
               style={{ backgroundColor: `${currentTheme.ui}CC` }}
@@ -442,16 +600,58 @@ export default function Reader({
         )}
       </AnimatePresence>
 
-      <div className="w-full h-full min-h-0 flex justify-center items-center px-8 py-4 overflow-hidden" style={{ maxWidth: viewerMaxWidth }}>
+      <AnimatePresence>
+        {searchOpen && (
+          <motion.form
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              runSearch(1);
+            }}
+            className="absolute right-4 top-20 z-40 flex items-center gap-1 rounded-2xl border p-2 shadow-xl backdrop-blur-xl"
+            style={{ backgroundColor: `${currentTheme.ui}F2`, borderColor: `${currentTheme.text}18` }}
+          >
+            <Search size={14} className="mx-1 opacity-50" />
+            <input
+              autoFocus
+              value={searchQuery}
+              onChange={(event) => {
+                setSearchQuery(event.target.value);
+                setSearchMessage('');
+              }}
+              placeholder="搜索书内内容"
+              className="w-44 bg-transparent px-1 text-sm outline-none"
+              style={{ color: currentTheme.text }}
+              aria-label="搜索书内内容"
+            />
+            <button type="button" disabled={searchBusy} onClick={() => void runSearch(-1)} className="rounded-lg p-1.5 opacity-60 hover:opacity-100 disabled:opacity-30" title="上一个">
+              <ChevronUp size={15} />
+            </button>
+            <button type="button" disabled={searchBusy} onClick={() => void runSearch(1)} className="rounded-lg p-1.5 opacity-60 hover:opacity-100 disabled:opacity-30" title="下一个">
+              <ChevronDown size={15} />
+            </button>
+            <button type="button" onClick={() => setSearchOpen(false)} className="rounded-lg p-1.5 opacity-60 hover:opacity-100" title="关闭">
+              <X size={15} />
+            </button>
+            {searchMessage && <span className="px-2 text-xs opacity-60">{searchMessage}</span>}
+          </motion.form>
+        )}
+      </AnimatePresence>
+
+      <div ref={viewerSurfaceRef} className="w-full h-full min-h-0 flex justify-center items-center px-8 py-4 overflow-hidden" style={{ maxWidth: viewerMaxWidth }}>
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center z-20">
             <div className="opacity-50 font-serif animate-pulse">{readerCopy.loading}</div>
           </div>
         )}
 
+        <Suspense fallback={<div className="opacity-50 font-serif animate-pulse">{readerCopy.loading}</div>}>
         {book.format === 'epub' && epubData ? (
           <div className={`w-full h-full min-h-0 transition-opacity duration-500 ${isLoading ? 'opacity-0' : 'opacity-100'}`}>
             <EpubViewer
+              key={book.id}
               ref={viewerRef}
               data={epubData}
               theme={theme}
@@ -465,15 +665,29 @@ export default function Reader({
               onLocationChange={handleLocationChange}
               onTextSelected={setSelection}
               onKeyPress={handleKeyPress}
-              onReady={() => setIsLoading(false)}
+              onReady={handleViewerReady}
+              onError={() => {
+                setLoadError('无法解析 EPUB 文件，请重新导入。');
+                setIsLoading(false);
+              }}
               onTocLoaded={setToc}
             />
           </div>
         ) : null}
 
-        {book.format === 'txt' && txtData ? (
+        {loadError ? (
+          <div className="flex flex-col items-center justify-center gap-3 text-center opacity-70">
+            <p className="font-serif text-lg">{loadError}</p>
+            <button className="px-4 py-2 rounded-xl border border-current/20 hover:bg-black/5 dark:hover:bg-white/5" onClick={onClose}>
+              返回书架
+            </button>
+          </div>
+        ) : null}
+
+        {book.format === 'txt' && txtData !== null && !loadError ? (
           <div className={`w-full h-full min-h-0 transition-opacity duration-500 ${isLoading ? 'opacity-0' : 'opacity-100'}`}>
             <TxtViewer
+              key={book.id}
               ref={viewerRef}
               text={txtData}
               theme={theme}
@@ -487,7 +701,7 @@ export default function Reader({
               onLocationChange={handleLocationChange}
               onTextSelected={setSelection}
               onKeyPress={handleKeyPress}
-              onReady={() => setIsLoading(false)}
+              onReady={handleViewerReady}
             />
           </div>
         ) : null}
@@ -495,6 +709,7 @@ export default function Reader({
         {book.format === 'pdf' && pdfData ? (
           <div className={`w-full h-full min-h-0 transition-opacity duration-500 ${isLoading ? 'opacity-0' : 'opacity-100'}`}>
             <PdfViewer
+              key={book.id}
               ref={viewerRef}
               data={pdfData}
               theme={theme}
@@ -507,11 +722,16 @@ export default function Reader({
               onLocationChange={handleLocationChange}
               onTextSelected={setSelection}
               onKeyPress={handleKeyPress}
-              onReady={() => setIsLoading(false)}
+              onReady={handleViewerReady}
+              onError={() => {
+                setLoadError('无法解析 PDF 文件，请重新导入。');
+                setIsLoading(false);
+              }}
               onTocLoaded={setToc}
             />
           </div>
         ) : null}
+        </Suspense>
       </div>
 
       <AnimatePresence>
@@ -530,41 +750,133 @@ export default function Reader({
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
-        {progressVisible && !isLoading && (
+      {!isLoading && (
           <motion.div
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 14 }}
-            onMouseEnter={() => setProgressVisible(true)}
-            className="absolute bottom-0 left-0 right-0 z-40 px-8 pb-3 pt-8 pointer-events-auto"
+            initial={false}
+            animate={{ opacity: progressVisible ? 1 : 0, y: progressVisible ? 0 : 14 }}
+            transition={{ duration: 0.16 }}
+            onMouseEnter={() => {
+              setProgressVisible(true);
+              if (progressTimeoutRef.current) {
+                window.clearTimeout(progressTimeoutRef.current);
+                progressTimeoutRef.current = null;
+              }
+            }}
+            className="absolute bottom-0 left-0 right-0 z-40 px-8 pb-3 pt-8"
+            style={{ pointerEvents: progressVisible ? 'auto' : 'none' }}
           >
             <div className="mx-auto w-full max-w-5xl">
-              <div className="mb-1 flex justify-end">
-                <span
-                  className="rounded-full px-2 py-0.5 text-[10px] font-mono backdrop-blur-md"
-                  style={{ backgroundColor: `${currentTheme.ui}D8`, color: currentTheme.text }}
-                >
-                  {progress}%
+              <div className="mb-1.5 flex items-center justify-between gap-3">
+                <span className="rounded-full px-2.5 py-1 text-[11px] font-serif backdrop-blur-md" style={{ backgroundColor: `${currentTheme.ui}D8`, color: currentTheme.text }}>
+                  {pageInfo ? `第 ${pageInfo.current} / ${pageInfo.total} 页` : '页码计算中'}
+                </span>
+                <span className="rounded-full px-2 py-0.5 text-[10px] font-mono backdrop-blur-md" style={{ backgroundColor: `${currentTheme.ui}D8`, color: currentTheme.text }}>
+                  {sliderPreview ?? progress}%
                 </span>
               </div>
-              <div
-                className="h-3 rounded-full overflow-hidden shadow-2xl"
-                style={{ backgroundColor: `${currentTheme.text}24`, boxShadow: `0 10px 30px ${currentTheme.text}1C` }}
-              >
-                <div
-                  className="h-full rounded-full transition-all duration-300"
-                  style={{
-                    width: `${progress}%`,
-                    backgroundColor: currentTheme.text,
-                    boxShadow: `0 0 18px ${currentTheme.text}66`,
-                  }}
-                />
-              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={0.1}
+                value={sliderPreview ?? progress}
+                aria-label="阅读进度"
+                aria-valuetext={`${pageInfo ? `第 ${pageInfo.current} / ${pageInfo.total} 页` : '页码计算中'}，${sliderPreview ?? progress}%`}
+                onFocus={() => {
+                  sliderFocusedRef.current = true;
+                  setProgressVisible(true);
+                  if (progressTimeoutRef.current) {
+                    window.clearTimeout(progressTimeoutRef.current);
+                    progressTimeoutRef.current = null;
+                  }
+                }}
+                onBlur={(event) => {
+                  sliderFocusedRef.current = false;
+                  if (sliderInteractionRef.current === 'keyboard') {
+                    if (keyboardSeekProgressRef.current !== null) {
+                      finishSliderSeek(keyboardSeekProgressRef.current, true);
+                    } else {
+                      sliderInteractionRef.current = null;
+                    }
+                  }
+                  if (progressTimeoutRef.current) window.clearTimeout(progressTimeoutRef.current);
+                  progressTimeoutRef.current = window.setTimeout(() => {
+                    if (!sliderFocusedRef.current && sliderInteractionRef.current === null) setProgressVisible(false);
+                  }, 720);
+                }}
+                onChange={(event) => setSliderPreview(Number(event.currentTarget.value))}
+                onPointerDown={(event) => {
+                  if (pendingSliderSeekRef.current) window.clearTimeout(pendingSliderSeekRef.current.timeout);
+                  pendingSliderSeekRef.current = null;
+                  keyboardSeekProgressRef.current = null;
+                  pendingKeyboardSeekCountRef.current = 0;
+                  sliderInteractionRef.current = 'pointer';
+                  setProgressVisible(true);
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerUp={(event) => {
+                  if (sliderInteractionRef.current === 'pointer') finishSliderSeek(Number(event.currentTarget.value));
+                }}
+                onPointerCancel={cancelSliderSeek}
+                onKeyDown={(event) => {
+                  const supportedKeys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
+                  if (!supportedKeys.includes(event.key)) return;
+                  event.preventDefault();
+                  if (pendingSliderSeekRef.current) window.clearTimeout(pendingSliderSeekRef.current.timeout);
+                  pendingSliderSeekRef.current = null;
+                  sliderInteractionRef.current = 'keyboard';
+                  setProgressVisible(true);
+
+                  if (['ArrowRight', 'ArrowUp', 'ArrowLeft', 'ArrowDown'].includes(event.key)) {
+                    keyboardSeekProgressRef.current = null;
+                    pendingKeyboardSeekCountRef.current = 0;
+                    lastKeyboardSeekAtRef.current = 0;
+                    setSliderPreview(null);
+                    if (event.key === 'ArrowRight' || event.key === 'ArrowUp') nextPage();
+                    else prevPage();
+                    return;
+                  }
+
+                  const now = Date.now();
+                  if (!lastKeyboardSeekAtRef.current || now - lastKeyboardSeekAtRef.current > 1200) {
+                    keyboardSeekProgressRef.current = null;
+                    pendingKeyboardSeekCountRef.current = 0;
+                  }
+                  lastKeyboardSeekAtRef.current = now;
+
+                  const current = keyboardSeekProgressRef.current ?? sliderPreview ?? progress;
+                  const next = event.key === 'Home'
+                    ? 0
+                    : event.key === 'End'
+                      ? 100
+                      : event.key === 'PageDown'
+                        ? current + 10
+                        : current - 10;
+                  const normalized = Math.min(100, Math.max(0, Math.round(next)));
+                  keyboardSeekProgressRef.current = normalized;
+                  setSliderPreview(normalized);
+                }}
+                onKeyUp={(event) => {
+                  if (sliderInteractionRef.current === 'keyboard' && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+                    if (keyboardSeekProgressRef.current !== null) {
+                      finishSliderSeek(keyboardSeekProgressRef.current, true);
+                    } else {
+                      sliderInteractionRef.current = null;
+                    }
+                  }
+                }}
+                className="reader-progress-slider block h-3 w-full cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4"
+                style={{
+                  color: currentTheme.text,
+                  '--progress': `${sliderPreview ?? progress}%`,
+                  '--progress-color': currentTheme.text,
+                  '--track-color': `${currentTheme.text}24`,
+                  touchAction: 'none',
+                } as React.CSSProperties}
+              />
             </div>
           </motion.div>
-        )}
-      </AnimatePresence>
+      )}
 
       <div className="absolute top-0 left-0 h-full cursor-w-resize z-10" style={{ width: pageHitZoneWidth }} onClick={prevPage} />
       <div className="absolute top-0 right-0 h-full cursor-e-resize z-10" style={{ width: pageHitZoneWidth }} onClick={nextPage} />
@@ -617,6 +929,7 @@ export default function Reader({
             notes={notes}
             onClose={() => setNotesOpen(false)}
             onDeleteNote={async (id: number) => {
+              if (!window.confirm('确定删除这条笔记吗？')) return;
               await db.notes.delete(id);
             }}
           />

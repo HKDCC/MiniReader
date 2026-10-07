@@ -28,7 +28,7 @@ export function buildBrowserNotesHtml(notes: Array<{ text: string; note?: string
       <style>
         body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; padding: 24px; color: #2f2924; }
         .note { margin-bottom: 16px; padding: 14px 16px; border-radius: 16px; background: #f7f1ea; }
-        blockquote { margin: 0; white-space: pre-wrap; font-family: "Noto Serif SC", serif; line-height: 1.8; }
+        blockquote { margin: 0; white-space: pre-wrap; font-family: "SimSun", "Songti SC", serif; line-height: 1.8; }
         .comment { margin-top: 10px; white-space: pre-wrap; font-size: 13px; }
         time { display: block; margin-top: 8px; color: #7d736a; font-size: 12px; }
       </style>

@@ -1,11 +1,9 @@
 import ePub from 'epubjs';
-import { pdfjs } from 'react-pdf';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { BookMeta, db } from '../db/db';
 import { parserCopy } from '../shared/copy';
 import { hashContent } from './contentHash';
 
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
 
 async function getNextSortOrder() {
   const books = await db.books.orderBy('sortOrder').toArray();
@@ -98,15 +96,27 @@ function getTitle(file: File, extension: string) {
   return file.name.replace(new RegExp(`\\.${extension}$`, 'i'), '');
 }
 
+async function decodeTextFile(file: File) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes).replace(/^\uFEFF/, '');
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes).replace(/^\uFEFF/, '');
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\uFEFF/, '');
+  } catch {
+    // Legacy Windows text files are commonly encoded as GB18030.
+    return new TextDecoder('gb18030').decode(bytes).replace(/^\uFEFF/, '');
+  }
+}
+
 async function detectFileFormat(file: File) {
   const fileName = file.name.trim().toLowerCase();
-  let isTxt = fileName.endsWith('.txt') || file.type === 'text/plain';
+  const hasKnownExtension = /\.(txt|epub|pdf)$/.test(fileName);
+  let isTxt = fileName.endsWith('.txt') || (!hasKnownExtension && file.type === 'text/plain');
   let isEpub =
     fileName.endsWith('.epub') ||
-    file.type === 'application/epub+zip' ||
-    file.type === 'application/zip' ||
-    file.type === 'application/x-zip-compressed';
-  let isPdf = fileName.endsWith('.pdf') || file.type === 'application/pdf';
+    (!hasKnownExtension && ['application/epub+zip', 'application/zip', 'application/x-zip-compressed'].includes(file.type));
+  let isPdf = fileName.endsWith('.pdf') || (!hasKnownExtension && file.type === 'application/pdf');
 
   if (!isTxt && !isEpub && !isPdf) {
     const buffer = await file.slice(0, 4).arrayBuffer();
@@ -130,6 +140,7 @@ async function extractEpubCover(book: any) {
     if (!coverUrl) return undefined;
 
     const response = await fetch(coverUrl);
+    if (!response.ok) return undefined;
     const blob = await response.blob();
     return await new Promise<string>((resolve) => {
       const reader = new FileReader();
@@ -143,8 +154,14 @@ async function extractEpubCover(book: any) {
 }
 
 async function extractPdfCover(arrayBuffer: ArrayBuffer) {
+  let pdf: any;
   try {
-    const pdf = await pdfjs.getDocument({ data: arrayBuffer.slice(0) }).promise;
+    const [{ pdfjs }, { default: pdfWorkerUrl }] = await Promise.all([
+      import('react-pdf'),
+      import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+    ]);
+    pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+    pdf = await pdfjs.getDocument({ data: arrayBuffer.slice(0), isEvalSupported: false, enableScripting: false } as any).promise;
     const page = await pdf.getPage(1);
     const viewport = page.getViewport({ scale: 1.0 });
     const canvas = document.createElement('canvas');
@@ -158,14 +175,19 @@ async function extractPdfCover(arrayBuffer: ArrayBuffer) {
   } catch (error) {
     console.warn('Failed to extract cover from PDF', error);
     return undefined;
+  } finally {
+    await pdf?.destroy().catch(() => undefined);
   }
 }
 
 export const importFile = async (file: File): Promise<ImportFileResult> => {
+  if (file.size > MAX_IMPORT_BYTES) {
+    throw new Error(`文件超过 ${Math.round(MAX_IMPORT_BYTES / 1024 / 1024)} MB 限制`);
+  }
   const format = await detectFileFormat(file);
 
   if (format === 'txt') {
-    const text = await file.text();
+    const text = await decodeTextFile(file);
     const contentHash = await hashContent(text);
     return saveImportedBook(text, {
       title: getTitle(file, 'txt'),
@@ -201,6 +223,10 @@ export const importFile = async (file: File): Promise<ImportFileResult> => {
   if (format === 'pdf') {
     const arrayBuffer = await file.arrayBuffer();
     const contentHash = await hashContent(arrayBuffer);
+    const existingBook = await findDuplicateBook(contentHash);
+    if (existingBook) {
+      return { status: 'duplicate', existingBook };
+    }
     const cover = await extractPdfCover(arrayBuffer);
 
     return saveImportedBook(arrayBuffer, {

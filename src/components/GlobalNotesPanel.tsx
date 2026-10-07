@@ -8,11 +8,10 @@ import { globalNotesCopy } from '../shared/copy';
 type GlobalNotesPanelProps = {
   onClose: () => void;
   onOpenBook: (book: BookMeta) => void;
-  uiColor: string;
   textCol: string;
 };
 
-export default function GlobalNotesPanel({ onClose, onOpenBook, uiColor, textCol }: GlobalNotesPanelProps) {
+export default function GlobalNotesPanel({ onClose, onOpenBook, textCol }: GlobalNotesPanelProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draftNote, setDraftNote] = useState('');
@@ -56,6 +55,7 @@ export default function GlobalNotesPanel({ onClose, onOpenBook, uiColor, textCol
   };
 
   const removeNote = async (id: number) => {
+    if (!window.confirm('确定删除这条笔记吗？')) return;
     await db.notes.delete(id);
     if (editingId === id) cancelEdit();
   };
@@ -67,10 +67,10 @@ export default function GlobalNotesPanel({ onClose, onOpenBook, uiColor, textCol
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="absolute inset-4 md:inset-12 z-50 rounded-3xl shadow-2xl flex flex-col overflow-hidden"
-      style={{ backgroundColor: uiColor, color: textCol }}
+      className="shelf-acrylic-surface absolute inset-4 md:inset-12 z-50 rounded-2xl border flex flex-col overflow-hidden"
+      style={{ color: textCol }}
     >
-      <div className="p-6 border-b border-black/5 flex justify-between items-center shrink-0">
+      <div className="shelf-panel-header p-6 border-b flex justify-between items-center shrink-0">
         <h2 className="text-xl font-serif tracking-wide flex items-center gap-3">
           <Search size={20} />
           {globalNotesCopy.title}
@@ -89,7 +89,7 @@ export default function GlobalNotesPanel({ onClose, onOpenBook, uiColor, textCol
             placeholder={globalNotesCopy.search}
             value={searchTerm}
             onChange={(event) => setSearchTerm(event.target.value)}
-            className="w-full bg-black/5 rounded-2xl py-3 pl-12 pr-4 outline-none focus:bg-black/10 transition-colors"
+            className="shelf-field w-full rounded-xl py-3 pl-12 pr-4 outline-none transition-colors"
             style={{ color: textCol }}
           />
         </div>
@@ -112,7 +112,7 @@ export default function GlobalNotesPanel({ onClose, onOpenBook, uiColor, textCol
                       key={book.id}
                       type="button"
                       onClick={() => onOpenBook(book)}
-                      className="w-full text-left bg-white/40 rounded-2xl px-4 py-3 flex items-center gap-3 hover:bg-white/60 transition-colors"
+                      className="shelf-note-card w-full text-left rounded-xl border px-4 py-3 flex items-center gap-3 transition-colors"
                       title={globalNotesCopy.openBook}
                     >
                       <BookOpen size={18} className="shrink-0 opacity-60" />
@@ -139,7 +139,7 @@ export default function GlobalNotesPanel({ onClose, onOpenBook, uiColor, textCol
                     const isEditing = editingId === note.id;
 
                     return (
-                      <div key={note.id} className="bg-white/40 rounded-2xl p-4 space-y-3">
+                      <div key={note.id} className="shelf-note-card rounded-xl border p-4 space-y-3">
                         <div className="flex justify-between items-start gap-4">
                           <button
                             type="button"
@@ -195,7 +195,7 @@ export default function GlobalNotesPanel({ onClose, onOpenBook, uiColor, textCol
                             value={draftNote}
                             onChange={(event) => setDraftNote(event.target.value)}
                             placeholder={globalNotesCopy.addNote}
-                            className="w-full min-h-24 bg-black/5 rounded-xl p-3 text-sm resize-y outline-none focus:bg-black/10 transition-colors"
+                            className="shelf-field w-full min-h-24 rounded-xl p-3 text-sm resize-y outline-none transition-colors"
                             style={{ color: textCol }}
                           />
                         ) : note.note ? (

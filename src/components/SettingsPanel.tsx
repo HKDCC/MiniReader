@@ -1,12 +1,36 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { settingsCopy } from '../shared/copy';
+import { getReaderFontStack } from '../shared/fonts';
 
 interface CustomFont {
   id: string;
   name: string;
   url?: string;
   builtIn?: boolean;
+}
+
+function normalizeFont(value: unknown): CustomFont | null {
+  if (!value || typeof value !== 'object') return null;
+  const font = value as { id?: unknown; name?: unknown; url?: unknown };
+  if (typeof font.id !== 'string' || typeof font.name !== 'string') return null;
+  const id = font.id.trim().replace(/[^\w -]/g, '').slice(0, 80);
+  if (!id) return null;
+  const url = typeof font.url === 'string' ? font.url.trim().slice(0, 2_000) : undefined;
+  if (url) {
+    try {
+      const protocol = new URL(url).protocol;
+      if (!['http:', 'https:', 'file:', 'data:'].includes(protocol)) return null;
+    } catch {
+      return null;
+    }
+  }
+  return { id, name: font.name.trim().slice(0, 80) || id, url };
+}
+
+function fontFaceCss(font: CustomFont) {
+  const source = font.url ? ` src: url(${JSON.stringify(font.url)}) format('woff2');` : '';
+  return `@font-face { font-family: ${JSON.stringify(font.id)};${source} }`;
 }
 
 export default function SettingsPanel({
@@ -34,14 +58,16 @@ export default function SettingsPanel({
   ];
 
   const builtInFonts: CustomFont[] = [
-    { id: 'Noto Serif SC', name: '\u601D\u6E90\u5B8B\u4F53', builtIn: true },
-    { id: 'Noto Sans SC', name: '\u601D\u6E90\u9ED1\u4F53', builtIn: true },
     { id: 'LXGW WenKai', name: '\u971E\u9E5C\u6587\u6977', builtIn: true },
+    { id: 'Source Han Serif SC', name: '\u601D\u6E90\u5B8B\u4F53', builtIn: true },
+    { id: 'Microsoft YaHei', name: '\u5FAE\u8F6F\u96C5\u9ED1', builtIn: true },
+    { id: 'Segoe UI', name: 'Segoe UI', builtIn: true },
   ];
 
   const [customFonts, setCustomFonts] = useState<CustomFont[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem('mr_customFonts') || '[]');
+      const stored = JSON.parse(localStorage.getItem('mr_customFonts') || '[]');
+      return Array.isArray(stored) ? stored.map(normalizeFont).filter((font): font is CustomFont => Boolean(font)).slice(0, 20) : [];
     } catch {
       return [];
     }
@@ -56,7 +82,7 @@ export default function SettingsPanel({
       if (font.url && !document.getElementById(`font-${font.id}`)) {
         const style = document.createElement('style');
         style.id = `font-${font.id}`;
-        style.textContent = `@font-face { font-family: '${font.id}'; src: url('${font.url}') format('woff2'); }`;
+        style.textContent = fontFaceCss(font);
         document.head.appendChild(style);
       }
     });
@@ -65,17 +91,16 @@ export default function SettingsPanel({
   const handleAddFont = () => {
     if (!newFontName.trim()) return;
 
-    const id = newFontName.trim();
+    const normalized = normalizeFont({ id: newFontName, name: newFontName, url: newFontUrl || undefined });
+    if (!normalized || customFonts.some((font) => font.id === normalized.id)) return;
     const nextFont: CustomFont = {
-      id,
-      name: id,
-      url: newFontUrl.trim() || undefined,
+      ...normalized,
     };
 
-    if (nextFont.url && !document.getElementById(`font-${id}`)) {
+    if (nextFont.url && !document.getElementById(`font-${nextFont.id}`)) {
       const style = document.createElement('style');
-      style.id = `font-${id}`;
-      style.textContent = `@font-face { font-family: '${id}'; src: url('${nextFont.url}') format('woff2'); }`;
+      style.id = `font-${nextFont.id}`;
+      style.textContent = fontFaceCss(nextFont);
       document.head.appendChild(style);
     }
 
@@ -90,7 +115,7 @@ export default function SettingsPanel({
     const element = document.getElementById(`font-${id}`);
     if (element) element.remove();
     if (fontFamily === id) {
-      setFontFamily('Noto Serif SC');
+      setFontFamily('Source Han Serif SC');
     }
   };
 
@@ -168,7 +193,7 @@ export default function SettingsPanel({
                 <button
                   onClick={() => setFontFamily(font.id)}
                   className={`flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors ${fontFamily === font.id ? 'bg-current/10 font-medium' : 'hover:bg-current/5 opacity-70'}`}
-                  style={{ fontFamily: font.id }}
+                  style={{ fontFamily: getReaderFontStack(font.id) }}
                 >
                   {font.name}
                 </button>
@@ -254,9 +279,6 @@ export default function SettingsPanel({
           />
         </div>
 
-        <div className="mt-8 pt-5 border-t border-current/10 text-xs opacity-45">
-          {settingsCopy.ocrRemoved}
-        </div>
       </div>
     </motion.div>
   );

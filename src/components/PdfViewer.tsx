@@ -4,6 +4,7 @@ import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import { Theme } from '../App';
 import { Note } from '../db/db';
+import type { ReaderLocationChange, ReaderPageInfo } from './readerTypes';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -13,10 +14,18 @@ const TEXT = {
   rendering: '\u6B63\u5728\u6E32\u67D3\u9875\u9762...',
 };
 
+function escapeHtml(value: string) {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+const safeNoteColor = (value: string) => (/^#[0-9a-f]{6}$/i.test(value) ? value : '#fcd34d');
+
 interface PdfViewerRef {
   next: () => void;
   prev: () => void;
   goTo: (href: string) => void;
+  seekToProgress: (progress: number) => void;
+  search: (query: string, direction?: number) => boolean | Promise<boolean>;
   clearSelection: () => void;
 }
 
@@ -35,15 +44,16 @@ interface PdfViewerProps {
   isTwoPage?: boolean;
   initialCfi?: string;
   notes: Note[];
-  onLocationChange: (percentage: number, cfi: string) => void;
+  onLocationChange: ReaderLocationChange;
   onTextSelected: (selection: { cfiRange: string; text: string; x: number; y: number } | null) => void;
   onKeyPress?: (key: string) => void;
   onReady: () => void;
+  onError?: (error: unknown) => void;
   onTocLoaded?: (toc: any[]) => void;
 }
 
 const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
-  ({ data, theme, isTwoPage = false, initialCfi, onLocationChange, onTextSelected, onReady, onTocLoaded }, ref) => {
+  ({ data, theme, isTwoPage = false, initialCfi, notes, onLocationChange, onTextSelected, onReady, onError, onTocLoaded }, ref) => {
     const [numPages, setNumPages] = useState(0);
     const [pageNumber, setPageNumber] = useState(() => {
       if (initialCfi && initialCfi.startsWith('pdf-page-')) {
@@ -54,6 +64,8 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
     const [pageRatio, setPageRatio] = useState(0.7);
     const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
     const containerRef = useRef<HTMLDivElement>(null);
+    const pdfDocumentRef = useRef<any>(null);
+    const lastSearchRef = useRef<{ query: string; page: number } | null>(null);
 
     const resizeTimer = useRef<any>(null);
     useEffect(() => {
@@ -79,18 +91,22 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
       return () => {
         observer.disconnect();
         if (resizeTimer.current) clearTimeout(resizeTimer.current);
+        pdfDocumentRef.current = null;
       };
     }, []);
 
     const actualTwoPage = isTwoPage && containerSize.width > 600;
     const step = actualTwoPage ? 2 : 1;
 
+    const lastPageInView = actualTwoPage && numPages > 1 && numPages % 2 === 0 ? numPages - 1 : numPages;
+
     useEffect(() => {
       if (numPages > 0) {
-        const progress = Math.min(1, Math.max(0, pageNumber / numPages));
-        onLocationChange(progress, `pdf-page-${pageNumber}`);
+        const progress = lastPageInView <= 1 ? 0 : Math.min(1, Math.max(0, (pageNumber - 1) / (lastPageInView - 1)));
+        const pageInfo: ReaderPageInfo = { current: pageNumber, total: numPages };
+        onLocationChange(progress, `pdf-page-${pageNumber}`, pageInfo);
       }
-    }, [numPages, onLocationChange, pageNumber]);
+    }, [lastPageInView, numPages, onLocationChange, pageNumber]);
 
     useImperativeHandle(ref, () => ({
       next: () => setPageNumber((previous) => Math.min(previous + step, numPages)),
@@ -101,6 +117,34 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
           setPageNumber(Math.min(Math.max(page, 1), numPages));
         }
       },
+      seekToProgress: (progress: number) => {
+        if (numPages <= 0) return;
+        const normalized = Number.isFinite(progress) ? Math.min(1, Math.max(0, progress)) : 0;
+        const targetPage = Math.round(normalized * Math.max(0, lastPageInView - 1)) + 1;
+        setPageNumber(Math.min(Math.max(targetPage, 1), numPages));
+      },
+      search: async (query: string, direction = 1) => {
+        const needle = query.trim();
+        if (!needle) return false;
+        const pdf = pdfDocumentRef.current;
+        if (!pdf) return Boolean((window as any).find?.(needle, false, direction < 0, true));
+
+        const repeated = lastSearchRef.current?.query === needle.toLocaleLowerCase();
+        const startPage = repeated ? pageNumber + direction : pageNumber;
+        const pageOrder = Array.from({ length: pdf.numPages }, (_, index) => ((startPage - 1 + index * direction) % pdf.numPages + pdf.numPages) % pdf.numPages + 1);
+        for (const candidate of pageOrder) {
+          const page = await pdf.getPage(candidate);
+          const content = await page.getTextContent();
+          const text = content.items.map((item: any) => item.str || '').join(' ');
+          if (text.toLocaleLowerCase().includes(needle.toLocaleLowerCase())) {
+            setPageNumber(candidate);
+            lastSearchRef.current = { query: needle.toLocaleLowerCase(), page: candidate };
+            return true;
+          }
+          page.cleanup?.();
+        }
+        return false;
+      },
       clearSelection: () => {
         window.getSelection()?.removeAllRanges();
         onTextSelected(null);
@@ -108,6 +152,7 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
     }));
 
     const onDocumentLoadSuccess = async (pdf: any) => {
+      pdfDocumentRef.current = pdf;
       setNumPages(pdf.numPages);
       setPageNumber((previous) => Math.min(Math.max(1, previous), pdf.numPages));
       onReady();
@@ -156,6 +201,19 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
       if (page.originalWidth && page.originalHeight) {
         setPageRatio(page.originalWidth / page.originalHeight);
       }
+    };
+
+    const renderPageText = (page: number, str: string) => {
+      const pageNotes = notes.filter((note) => note.cfi.startsWith(`pdf-page-${page}-`) && note.text.trim());
+      if (pageNotes.length === 0) return escapeHtml(str);
+
+      let rendered = escapeHtml(str);
+      pageNotes.forEach((note) => {
+        const text = escapeHtml(note.text.trim());
+        if (!text) return;
+        rendered = rendered.split(text).join(`<mark style="background:${safeNoteColor(note.color)};background-opacity:.45;color:inherit;border-radius:2px">${text}</mark>`);
+      });
+      return rendered;
     };
 
     const wheelTimeout = useRef<any>(null);
@@ -217,7 +275,9 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
       >
         <Document
           file={data}
+          options={{ isEvalSupported: false, enableScripting: false } as any}
           onLoadSuccess={onDocumentLoadSuccess}
+          onLoadError={(error) => onError?.(error)}
           loading={<div className="opacity-50 font-serif animate-pulse">{TEXT.parsing}</div>}
           className="flex justify-center items-center w-full h-full"
         >
@@ -230,6 +290,7 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
                 onLoadSuccess={onPageLoadSuccess}
                 renderAnnotationLayer={false}
                 renderTextLayer
+                customTextRenderer={({ str }: { str: string }) => renderPageText(pageNumber, str)}
                 loading={<div className="opacity-50 font-serif animate-pulse">{TEXT.rendering}</div>}
                 className="shadow-md"
               />
@@ -240,6 +301,7 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
                   height={fitByWidth ? undefined : availableHeight}
                   renderAnnotationLayer={false}
                   renderTextLayer
+                  customTextRenderer={({ str }: { str: string }) => renderPageText(pageNumber + 1, str)}
                   loading={<div className="opacity-50 font-serif animate-pulse">{TEXT.rendering}</div>}
                   className="shadow-md"
                 />

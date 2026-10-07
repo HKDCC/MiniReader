@@ -66,27 +66,55 @@ export async function exportLibraryBackup() {
   };
 
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json;charset=utf-8' });
+  const blobUrl = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
-  anchor.href = URL.createObjectURL(blob);
+  anchor.href = blobUrl;
   anchor.download = `mini-reader-backup-${new Date().toISOString().slice(0, 10)}.json`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(anchor.href);
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1_000);
 }
 
 export async function importLibraryBackup(file: File) {
-  const payload = JSON.parse(await file.text());
+  if (file.size > 512 * 1024 * 1024) throw new Error('备份文件过大');
+  let payload: any;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch {
+    throw new Error('备份文件不是有效的 JSON');
+  }
   if (payload?.app !== 'Mini Reader' || payload?.schemaVersion !== 1) {
     throw new Error('不是有效的 Mini Reader 备份文件');
   }
+  if (!Array.isArray(payload.books) || !Array.isArray(payload.contents) || !Array.isArray(payload.notes)) {
+    throw new Error('备份文件缺少必要数据');
+  }
+  if (payload.books.length > 100_000 || payload.contents.length > 100_000 || payload.notes.length > 100_000) {
+    throw new Error('备份数据量超出限制');
+  }
+  if (payload.settings !== undefined && (!payload.settings || typeof payload.settings !== 'object' || Array.isArray(payload.settings))) {
+    throw new Error('备份设置格式无效');
+  }
+  const settingsEntries = payload.settings ? Object.entries(payload.settings) : [];
+  if (settingsEntries.length > 100 || settingsEntries.some(([key, value]) => key.length > 100 || typeof value !== 'string' || value.length > 10_000)) {
+    throw new Error('备份设置格式无效');
+  }
 
-  const restoredContents = (payload.contents || []).map(deserializeContent);
+  const restoredContents = payload.contents.map((content: SerializedContent) => {
+    if (!content || typeof content.id !== 'string' || (content.kind !== 'text' && content.kind !== 'binary') || typeof content.data !== 'string') {
+      throw new Error('备份内容格式无效');
+    }
+    return deserializeContent(content);
+  });
   const restoredContentById = new Map<string, BookContent>(
     restoredContents.map((content): [string, BookContent] => [content.id, content])
   );
   const restoredBooks = await Promise.all(
-    (payload.books || []).map(async (book: any) => {
+    payload.books.map(async (book: any) => {
+      if (!book || typeof book.id !== 'string' || !['txt', 'epub', 'pdf'].includes(book.format)) {
+        throw new Error('备份书籍格式无效');
+      }
       if (book.contentHash) return book;
 
       const content = restoredContentById.get(book.id);
@@ -95,12 +123,28 @@ export async function importLibraryBackup(file: File) {
       return { ...book, contentHash: await hashContent(content.data) };
     })
   );
+  const restoredBookIds = new Set(restoredBooks.map((book: any) => book.id));
+  const restoredNotes = payload.notes.map((note: any) => {
+    if (
+      !note ||
+      typeof note.bookId !== 'string' ||
+      !restoredBookIds.has(note.bookId) ||
+      typeof note.text !== 'string' ||
+      typeof note.note !== 'string' ||
+      typeof note.color !== 'string' ||
+      typeof note.cfi !== 'string' ||
+      typeof note.createdAt !== 'number'
+    ) {
+      throw new Error('备份笔记格式无效');
+    }
+    return note;
+  });
 
   await db.transaction('rw', db.books, db.contents, db.notes, async () => {
     await Promise.all([db.books.clear(), db.contents.clear(), db.notes.clear()]);
     await db.books.bulkPut(restoredBooks);
     await db.contents.bulkPut(restoredContents);
-    await db.notes.bulkPut(payload.notes || []);
+    await db.notes.bulkPut(restoredNotes);
   });
 
   Object.entries(payload.settings || {}).forEach(([key, value]) => {

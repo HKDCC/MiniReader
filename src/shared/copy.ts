@@ -8,8 +8,7 @@ export const appCopy = {
 } as const;
 
 export const shelfCopy = {
-  title: '\u4E66\u67B6',
-  subtitle: '\u62D6\u52A8\u4E66\u7C4D\u5373\u53EF\u8C03\u6574\u987A\u5E8F',
+  title: 'MiniReader',
   search: '\u641C\u7D22',
   importBooks: '\u5BFC\u5165\u4E66\u7C4D',
   exportBackup: '\u5BFC\u51FA\u5907\u4EFD',
@@ -97,7 +96,6 @@ export const settingsCopy = {
   fontSize: '\u5B57\u53F7',
   lineHeight: '\u884C\u95F4\u8DDD',
   pageWidth: '\u9605\u8BFB\u5BBD\u5EA6',
-  ocrRemoved: '\u5DF2\u79FB\u9664 OCR \u4E0E\u89C6\u89C9\u5927\u6A21\u578B\u4E0B\u8F7D\u529F\u80FD',
 } as const;
 
 export const tocCopy = {

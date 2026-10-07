@@ -1,33 +1,60 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { BookOpen, Plus, UploadCloud, Trash2, Library, Search, GripVertical, Download, Upload } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
+import { BookOpen, Plus, UploadCloud, Trash2, Library, Search, GripVertical, Download, Upload, Sun, Moon } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, BookMeta } from '../db/db';
 import { importFile } from '../utils/parser';
 import { appCopy, shelfCopy } from '../shared/copy';
 import { exportLibraryBackup, importLibraryBackup } from '../shared/backup';
-import { getBookDragId, isExternalFileDrag, isInternalBookDrag, setBookDragData } from './shelf/dragDrop';
+import { isExternalFileDrag } from './shelf/dragDrop';
 import GlobalNotesPanel from './GlobalNotesPanel';
+import ShelfAction from './shelf/ShelfAction';
+import { useShelfReorder } from './shelf/useShelfReorder';
 
-async function persistBookOrder(books: BookMeta[]) {
+async function persistBookOrder(books: BookMeta[], orderSlots: number[]) {
   await db.transaction('rw', db.books, async () => {
-    await Promise.all(books.map((book, index) => db.books.update(book.id, { sortOrder: index })));
+    await Promise.all(books.map((book, index) => db.books.update(book.id, { sortOrder: orderSlots[index] ?? index })));
   });
 }
 
-export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: BookMeta) => void; uiColor: string }) {
+type ShelfTheme = 'light' | 'dark';
+
+export default function Shelf({
+  onOpenBook,
+  shelfTheme,
+  onToggleShelfTheme,
+}: {
+  onOpenBook: (book: BookMeta) => void;
+  shelfTheme: ShelfTheme;
+  onToggleShelfTheme: () => void;
+}) {
   const books = useLiveQuery(() => db.books.orderBy('sortOrder').toArray()) || [];
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isNotesPanelOpen, setIsNotesPanelOpen] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; bookId: string } | null>(null);
-  const [draggingBookId, setDraggingBookId] = useState<string | null>(null);
+  const [isToolbarDocked, setIsToolbarDocked] = useState(false);
+  const reduceMotion = useReducedMotion();
   const [highlightedBookId, setHighlightedBookId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backupInputRef = useRef<HTMLInputElement>(null);
+  const shelfRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const bookRefs = useRef(new Map<string, HTMLDivElement>());
   const highlightTimeoutRef = useRef<number | null>(null);
+  const { recentBooks, manualBooks, recentBookIds } = useMemo(() => {
+    const mostRecent = [...books]
+      .sort((a, b) => (b.lastReadAt || b.addedAt || 0) - (a.lastReadAt || a.addedAt || 0) || b.addedAt - a.addedAt || a.sortOrder - b.sortOrder)
+      .slice(0, 3);
+    const recentIds = new Set(mostRecent.map((book) => book.id));
+    const remaining = books.filter((book) => !recentIds.has(book.id));
+    return {
+      recentBooks: mostRecent,
+      manualBooks: remaining,
+      recentBookIds: recentIds,
+    };
+  }, [books]);
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -179,10 +206,20 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
 
   const handleDeleteBook = async (id: string) => {
     setContextMenu(null);
-    await db.books.delete(id);
-    await db.contents.delete(id);
-    const notes = await db.notes.where('bookId').equals(id).toArray();
-    await Promise.all(notes.map((note) => (note.id ? db.notes.delete(note.id) : Promise.resolve())));
+    const book = books.find((item) => item.id === id);
+    if (!book || !window.confirm(`确定删除《${book.title || '未命名书籍'}》吗？书籍内容和笔记也会被删除。`)) return;
+
+    try {
+      await db.transaction('rw', db.books, db.contents, db.notes, async () => {
+        await db.books.delete(id);
+        await db.contents.delete(id);
+        await db.notes.where('bookId').equals(id).delete();
+      });
+      showToast('书籍已删除', 'success');
+    } catch (error) {
+      console.error('Delete book failed:', error);
+      showToast('删除失败，请重试', 'error');
+    }
   };
 
   const handleContextMenu = (event: React.MouseEvent, bookId: string) => {
@@ -191,18 +228,17 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
     setContextMenu({ x: event.clientX, y: event.clientY, bookId });
   };
 
-  const reorderBook = async (sourceBookId: string, targetBookId: string) => {
-    if (sourceBookId === targetBookId) return;
-
-    const nextBooks = [...books];
-    const fromIndex = nextBooks.findIndex((book) => book.id === sourceBookId);
-    const toIndex = nextBooks.findIndex((book) => book.id === targetBookId);
-    if (fromIndex === -1 || toIndex === -1) return;
-
-    const [moved] = nextBooks.splice(fromIndex, 1);
-    nextBooks.splice(toIndex, 0, moved);
-    await persistBookOrder(nextBooks);
+  const commitBookOrder = async (nextBooks: BookMeta[]) => {
+    const orderSlots = manualBooks.map((book) => book.sortOrder).sort((a, b) => a - b);
+    try {
+      await persistBookOrder(nextBooks, orderSlots);
+    } catch (error) {
+      showToast('排序保存失败，请重试', 'error');
+      throw error;
+    }
   };
+  const { draggingId, orderedBooks, beginDrag, shouldSuppressClick } = useShelfReorder(manualBooks, shelfRef, gridRef, bookRefs, commitBookOrder);
+  const displayBooks = [...recentBooks, ...orderedBooks];
 
   useEffect(() => {
     const handleClick = () => setContextMenu(null);
@@ -225,10 +261,17 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
 
   return (
     <motion.div
+      ref={shelfRef}
+      layoutScroll
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="w-full h-full p-12 max-w-6xl mx-auto overflow-y-auto scrollbar-none relative"
+      className="w-full h-full px-12 pb-12 max-w-6xl mx-auto overflow-y-auto scrollbar-none relative"
+      data-shelf-theme={shelfTheme}
+      onScroll={(event) => {
+        const scrollTop = event.currentTarget.scrollTop;
+        setIsToolbarDocked((docked) => scrollTop > (docked ? 16 : 40));
+      }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -239,8 +282,7 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 z-50 flex flex-col items-center justify-center backdrop-blur-sm border-4 border-dashed rounded-3xl m-4 pointer-events-none"
-            style={{ backgroundColor: `${uiColor}E6`, borderColor: 'currentColor' }}
+            className="shelf-acrylic-surface absolute inset-0 z-50 flex flex-col items-center justify-center border-2 border-dashed rounded-2xl m-4 pointer-events-none"
           >
             <UploadCloud size={64} className="mb-4 opacity-50" />
             <h2 className="text-2xl font-serif">{shelfCopy.importOverlayTitle}</h2>
@@ -255,8 +297,7 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 z-50 flex flex-col items-center justify-center backdrop-blur-sm rounded-3xl m-4"
-            style={{ backgroundColor: `${uiColor}E6` }}
+            className="shelf-acrylic-surface absolute inset-0 z-50 flex flex-col items-center justify-center border rounded-2xl m-4"
           >
             <div className="w-8 h-8 border-2 border-current border-t-transparent rounded-full animate-spin mb-4 opacity-50" />
             <h2 className="text-lg font-serif">{shelfCopy.importing}</h2>
@@ -270,57 +311,43 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="absolute bottom-8 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-full shadow-xl text-sm font-medium"
-            style={{
-              backgroundColor: toast.type === 'success' ? '#22c55e' : '#ef4444',
-              color: '#fff',
-            }}
+            className="shelf-acrylic-surface shelf-toast absolute bottom-8 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-xl border text-sm font-medium"
+            data-status={toast.type}
           >
             {toast.message}
           </motion.div>
         )}
       </AnimatePresence>
 
-      <header className="mb-8 flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
-        <div>
-          <h1 className="text-4xl font-serif tracking-tight mb-2">{shelfCopy.title}</h1>
-          <p className="text-sm opacity-50">{shelfCopy.subtitle}</p>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          <button
-            onClick={handleExportBackup}
-            className="px-4 py-2 rounded-full bg-current/5 hover:bg-current/10 transition-colors flex items-center gap-2 text-sm"
-            title={shelfCopy.exportBackup}
-          >
-            <Download size={16} strokeWidth={2} />
-            <span className="font-medium">{shelfCopy.exportBackup}</span>
-          </button>
+      <header className="shelf-acrylic-surface shelf-toolbar z-20 mt-12 mb-8 flex items-center justify-between gap-4 border px-5 py-3" data-docked={isToolbarDocked}>
+        <h1 className="shelf-brand text-2xl font-medium tracking-tight">{shelfCopy.title}</h1>
+        <nav aria-label="书架工具" className="flex items-center justify-end gap-2">
+          <ShelfAction label={shelfTheme === 'light' ? '切换到暗色书架' : '切换到亮色书架'} onClick={onToggleShelfTheme} isThemeSwitch checked={shelfTheme === 'dark'}>
+            <svg viewBox="0 0 52 28" width="52" height="28" fill="none" aria-hidden="true">
+              <rect x="0.5" y="0.5" width="51" height="27" rx="13.5" className="shelf-switch-track" />
+              <Sun x="6" y="6" width="16" height="16" strokeWidth={1.6} opacity=".4" />
+              <Moon x="30" y="6" width="16" height="16" strokeWidth={1.6} opacity=".4" />
+              <g className="shelf-switch-thumb" data-dark={shelfTheme === 'dark'}>
+                <circle cx="14" cy="14" r="10.5" />
+                {shelfTheme === 'light' ? <Sun x="7" y="7" width="14" height="14" strokeWidth={1.7} /> : <Moon x="7" y="7" width="14" height="14" strokeWidth={1.7} />}
+              </g>
+            </svg>
+          </ShelfAction>
+          <ShelfAction label={shelfCopy.exportBackup} onClick={handleExportBackup}>
+            <Upload size={18} strokeWidth={1.7} />
+          </ShelfAction>
           <input type="file" ref={backupInputRef} onChange={handleBackupSelect} accept=".json,application/json" className="hidden" />
-          <button
-            onClick={() => backupInputRef.current?.click()}
-            className="px-4 py-2 rounded-full bg-current/5 hover:bg-current/10 transition-colors flex items-center gap-2 text-sm"
-            title={shelfCopy.importBackup}
-          >
-            <Upload size={16} strokeWidth={2} />
-            <span className="font-medium">{shelfCopy.importBackup}</span>
-          </button>
-          <button
-            onClick={() => setIsNotesPanelOpen(true)}
-            className="px-4 py-2 rounded-full bg-current/5 hover:bg-current/10 transition-colors flex items-center gap-2 text-sm"
-          >
-            <Search size={16} strokeWidth={2} />
-            <span className="font-medium">{shelfCopy.search}</span>
-          </button>
+          <ShelfAction label={shelfCopy.importBackup} onClick={() => backupInputRef.current?.click()}>
+            <Download size={18} strokeWidth={1.7} />
+          </ShelfAction>
+          <ShelfAction label={shelfCopy.search} onClick={() => setIsNotesPanelOpen(true)}>
+            <Search size={18} strokeWidth={1.7} />
+          </ShelfAction>
           <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept=".txt,.epub,.pdf" className="hidden" multiple />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="px-4 py-2 rounded-full bg-current/5 hover:bg-current/10 transition-colors flex items-center gap-2 text-sm"
-          >
-            <Plus size={16} strokeWidth={2} />
-            <span className="font-medium">{shelfCopy.importBooks}</span>
-          </button>
-        </div>
+          <ShelfAction label={shelfCopy.importBooks} onClick={() => fileInputRef.current?.click()}>
+            <Plus size={20} strokeWidth={1.7} />
+          </ShelfAction>
+        </nav>
       </header>
 
       {books.length === 0 ? (
@@ -330,54 +357,34 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
           <p className="text-sm mt-2">{shelfCopy.emptyDescription}</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-x-8 gap-y-12">
-          {books.map((book, index) => (
+        <div ref={gridRef} className="relative grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-x-8 gap-y-12">
+          {displayBooks.map((book, index) => {
+            const isRecentBook = recentBookIds.has(book.id);
+            return (
             <motion.div
               key={book.id}
+              layout="position"
+              data-book-id={book.id}
+              data-reordering={Boolean(draggingId && draggingId !== book.id && !isRecentBook)}
+              style={{ '--shelf-wiggle-delay': `${(index % 3) * -70}ms` } as React.CSSProperties}
               initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: Math.min(index * 0.05, 0.5) }}
+              animate={{ opacity: draggingId === book.id ? 0.25 : 1, y: 0, scale: draggingId === book.id ? 0.97 : 1 }}
+              transition={{
+                layout: reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 },
+                opacity: { duration: 0.16 }, scale: { duration: 0.18 },
+                y: { delay: reduceMotion ? 0 : Math.min(index * 0.025, 0.25), duration: reduceMotion ? 0 : 0.18 },
+              }}
               ref={(element) => {
                 if (element) bookRefs.current.set(book.id, element);
                 else bookRefs.current.delete(book.id);
               }}
-              className={`group cursor-pointer flex flex-col relative rounded-xl transition-all duration-300 ${
-                draggingBookId === book.id ? 'opacity-50' : ''
-              } ${highlightedBookId === book.id ? 'ring-4 ring-black/30 ring-offset-4 ring-offset-transparent scale-[1.03]' : ''}`}
-              draggable
-              onDragStart={(event) => {
-                const dragEvent = event as unknown as React.DragEvent<HTMLDivElement>;
-                dragEvent.stopPropagation();
-                setBookDragData(dragEvent.dataTransfer, book.id);
-                setDraggingBookId(book.id);
-                setIsDraggingFiles(false);
-              }}
-              onDragEnd={() => {
-                setDraggingBookId(null);
-                setIsDraggingFiles(false);
-              }}
-              onDragOver={(event) => {
-                const dragEvent = event as unknown as React.DragEvent<HTMLDivElement>;
-                if (!isInternalBookDrag(dragEvent.dataTransfer.types)) return;
-                dragEvent.preventDefault();
-                dragEvent.stopPropagation();
-                dragEvent.dataTransfer.dropEffect = 'move';
-              }}
-              onDrop={(event) => {
-                const dragEvent = event as unknown as React.DragEvent<HTMLDivElement>;
-                if (!isInternalBookDrag(dragEvent.dataTransfer.types)) return;
-                dragEvent.preventDefault();
-                dragEvent.stopPropagation();
-                const sourceBookId = getBookDragId(dragEvent.dataTransfer) || draggingBookId;
-                if (sourceBookId) {
-                  void reorderBook(sourceBookId, book.id);
-                }
-                setDraggingBookId(null);
-              }}
-              onClick={() => onOpenBook(book)}
+              className={`shelf-paper-card group cursor-pointer select-none flex flex-col relative rounded-xl border p-3 ${highlightedBookId === book.id ? 'ring-4 ring-black/30 ring-offset-4 ring-offset-transparent' : ''}`}
+              draggable={false}
+              onPointerDown={(event) => { if (!isRecentBook) beginDrag(event, book); }}
+              onClick={() => { if (!shouldSuppressClick()) onOpenBook(book); }}
             >
               <div
-                className="aspect-[3/4] rounded-md mb-4 relative overflow-hidden shadow-sm flex items-center justify-center border border-black/5 bg-white/50"
+                className="shelf-cover aspect-[3/4] rounded-lg mb-3 relative overflow-hidden flex items-center justify-center border"
                 onContextMenu={(event) => handleContextMenu(event, book.id)}
               >
                 {book.cover ? (
@@ -388,11 +395,14 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
                     <span className="text-xs font-serif uppercase tracking-widest">{book.format}</span>
                   </div>
                 )}
-                <div className="absolute top-2 right-2 p-1.5 rounded-full bg-black/10 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <GripVertical size={14} />
-                </div>
-                <div className="absolute bottom-0 left-0 h-1.5 bg-black/10 w-full">
-                  <div className="h-full bg-black/60" style={{ width: `${book.progress}%` }} />
+                {!isRecentBook && <div className="absolute top-2 right-2 p-1.5 rounded-full bg-black/10 opacity-0 group-hover:opacity-100 transition-opacity"><GripVertical size={14} /></div>}
+                {isRecentBook && (
+                  <span className="shelf-recent-badge absolute top-2 left-2 rounded-md px-2 py-1 text-[10px]">
+                    最近阅读
+                  </span>
+                )}
+                <div className="shelf-cover-progress absolute bottom-0 left-0 h-1 w-full">
+                  <div className="h-full" style={{ width: `${book.progress}%` }} />
                 </div>
               </div>
               <h3 className="font-serif text-base leading-snug mb-1 group-hover:opacity-70 transition-opacity line-clamp-2">{book.title}</h3>
@@ -401,7 +411,8 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
                 <p className="text-[10px] opacity-40 font-mono">{book.progress}%</p>
               </div>
             </motion.div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -412,8 +423,7 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 z-40 backdrop-blur-sm"
-              style={{ backgroundColor: `${uiColor}E6` }}
+              className="shelf-modal-scrim absolute inset-0 z-40"
               onClick={() => setIsNotesPanelOpen(false)}
             />
             <GlobalNotesPanel
@@ -422,7 +432,6 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
                 setIsNotesPanelOpen(false);
                 onOpenBook(book);
               }}
-              uiColor={uiColor}
               textCol="inherit"
             />
           </>
@@ -437,12 +446,10 @@ export default function Shelf({ onOpenBook, uiColor }: { onOpenBook: (book: Book
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed z-50 py-2 rounded-xl shadow-2xl border backdrop-blur-xl text-sm"
+              className="shelf-acrylic-surface fixed z-50 py-2 rounded-xl border text-sm"
               style={{
                 left: contextMenu.x,
                 top: contextMenu.y,
-                backgroundColor: `${uiColor}EE`,
-                borderColor: `${uiColor}40`,
                 color: 'currentColor',
               }}
             >

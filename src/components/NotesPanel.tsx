@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, Download, Trash2, FileText, FileDown, X } from 'lucide-react';
-import { Document, Packer, Paragraph, TextRun } from 'docx';
+import type { Paragraph as DocxParagraph } from 'docx';
 import { Note } from '../db/db';
 import { notesCopy } from '../shared/copy';
 import { buildBrowserNotesHtml, buildNotesMarkdown } from '../shared/notesExport';
@@ -40,14 +40,16 @@ export default function NotesPanel({
     anchor.href = url;
     anchor.download = `notes-${Date.now()}.md`;
     anchor.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
     setShowExportMenu(false);
   };
 
   const handleExportDocx = async () => {
     if (notes.length === 0) return;
 
-    const children: Paragraph[] = [
+    const { Document, Packer, Paragraph, TextRun } = await import('docx');
+
+    const children: DocxParagraph[] = [
       new Paragraph({ children: [new TextRun({ text: notesCopy.exportTitle, bold: true, size: 32 })] }),
       new Paragraph({ text: '' }),
     ];
@@ -70,7 +72,7 @@ export default function NotesPanel({
     anchor.href = url;
     anchor.download = `notes-${Date.now()}.docx`;
     anchor.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
     setShowExportMenu(false);
   };
 

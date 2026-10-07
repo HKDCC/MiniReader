@@ -14,7 +14,7 @@
 - 📚 **多格式支持**：原生支持 TXT、EPUB、PDF 本地文件拖拽解析与流畅排版。
 - 🔒 **本地优先（Local-First）**：基于 IndexedDB（Dexie.js）存储书库、阅读进度与划线高亮，数据完全归属本地，零隐私泄露风险。
 - 🎨 **多套护眼主题**：提供温暖羊皮纸、柔和护眼绿、经典米白、深灰暗黑及纯黑夜间等 5 套专属阅读配色。
-- 📝 **深度笔记与目录**：支持章节目录跳转、金句划线、随手批注，并支持一键导出为 Markdown / DOCX / PDF / HTML 格式。
+- 📝 **深度笔记与目录**：支持章节目录跳转、金句划线、随手批注，并支持一键导出为 Markdown / DOCX / PDF。
 - ⚡ **极致轻量**：基于 Vite 6 + TailwindCSS v4 构建，极速秒开，内存占用低。
 
 ---
@@ -27,6 +27,8 @@
 - **Storage**: IndexedDB (Dexie 4)
 - **Document Engines**: epubjs, pdfjs-dist, react-pdf, docx
 - **Animations & Icons**: Motion, Lucide React
+
+桌面端默认使用 Windows 系统字体，不依赖联网字体服务；PDF/EPUB 阅读器按需加载，以减少启动时的资源开销。
 
 ---
 
@@ -53,6 +55,8 @@ npm run electron:dist
 ```
 
 打包产物将自动生成于 `release/` 目录。
+
+如需发布签名安装包，请在构建环境配置 electron-builder 的代码签名变量（例如 `CSC_LINK` / `CSC_KEY_PASSWORD`）；未配置证书时会生成可用但未签名的安装包。
 
 ---
 

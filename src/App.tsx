@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { Copy, Minus, Square, X } from 'lucide-react';
 import Shelf from './components/Shelf';
 import Reader from './components/Reader';
 import { BookMeta } from './db/db';
 import { appCopy } from './shared/copy';
 
 export type Theme = 'warm-white' | 'beige' | 'eye-care' | 'dark' | 'night';
+type ShelfTheme = 'light' | 'dark';
 
 const THEMES = {
   'warm-white': { bg: '#F5F0EB', text: '#2C2C2C', ui: '#ECEBEA' },
@@ -15,27 +17,42 @@ const THEMES = {
   night: { bg: '#000000', text: '#E0E0E0', ui: '#111111' },
 };
 
+const SHELF_THEMES: Record<ShelfTheme, { bg: string; text: string }> = {
+  light: { bg: '#F5EFE5', text: '#3E3730' },
+  dark: { bg: '#24221F', text: '#E7DFD2' },
+};
+
 const isElectron = () => typeof window !== 'undefined' && !!(window as any).electron;
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'shelf' | 'reader'>('shelf');
   const [activeBook, setActiveBook] = useState<BookMeta | null>(null);
-  const [theme, setTheme] = useState<Theme>('warm-white');
+  const [theme, setTheme] = useState<Theme>(() => {
+    const saved = localStorage.getItem('mr_theme') as Theme | null;
+    return saved && Object.prototype.hasOwnProperty.call(THEMES, saved) ? saved : 'warm-white';
+  });
+  const [shelfTheme, setShelfTheme] = useState<ShelfTheme>(() => localStorage.getItem('mr_shelfTheme') === 'dark' ? 'dark' : 'light');
   const [isMaximized, setIsMaximized] = useState(false);
 
   const currentTheme = THEMES[theme];
+  const currentShelfTheme = SHELF_THEMES[shelfTheme];
+
+  useEffect(() => {
+    localStorage.setItem('mr_theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem('mr_shelfTheme', shelfTheme);
+  }, [shelfTheme]);
 
   useEffect(() => {
     if (!isElectron()) return;
 
-    (window as any).electron.invoke('window:isMaximized').then((value: boolean) => setIsMaximized(value));
-    const interval = setInterval(async () => {
-      if (!isElectron()) return;
-      const value = await (window as any).electron.invoke('window:isMaximized');
-      setIsMaximized(value);
-    }, 500);
+    (window as any).electron.invoke('window:isMaximized').then((value: boolean) => setIsMaximized(value)).catch(() => undefined);
+    const handleMaximizedChanged = (value: boolean) => setIsMaximized(Boolean(value));
+    (window as any).electron.on('window:maximized-changed', handleMaximizedChanged);
 
-    return () => clearInterval(interval);
+    return () => (window as any).electron.off?.('window:maximized-changed', handleMaximizedChanged);
   }, []);
 
   useEffect(() => {
@@ -65,7 +82,7 @@ export default function App() {
   };
 
   const dragStyle = {
-    backgroundColor: currentTheme.ui,
+    backgroundColor: currentView === 'shelf' ? undefined : currentTheme.ui,
     WebkitAppRegion: 'drag',
   } as any;
 
@@ -73,34 +90,44 @@ export default function App() {
 
   return (
     <div
-      className="w-full h-screen flex flex-col overflow-hidden font-sans selection:bg-black/10"
-      style={{ backgroundColor: currentTheme.bg, color: currentTheme.text }}
+      className={`w-full h-screen flex flex-col overflow-hidden font-sans selection:bg-black/10 ${currentView === 'shelf' ? 'shelf-canvas' : ''}`}
+      data-shelf-theme={currentView === 'shelf' ? shelfTheme : undefined}
+      style={{
+        backgroundColor: currentView === 'shelf' ? currentShelfTheme.bg : currentTheme.bg,
+        color: currentView === 'shelf' ? currentShelfTheme.text : currentTheme.text,
+      }}
     >
       {isElectron() && (
-        <div className="h-8 flex items-center justify-between px-3 select-none shrink-0" style={dragStyle}>
+        <div className={`h-8 flex items-center justify-between px-3 select-none shrink-0 ${currentView === 'shelf' ? 'shelf-window-bar' : ''}`} style={dragStyle}>
           <div className="flex-1 truncate text-[11px] opacity-40 pr-4">{currentView === 'reader' && activeBook ? activeBook.title : appCopy.appName}</div>
 
-          <div className="flex items-center gap-1" style={noDragStyle}>
+          <div className="flex items-center" style={noDragStyle}>
             <button
               onClick={handleMinimize}
-              className="w-6 h-6 flex items-center justify-center rounded hover:bg-black/10 transition-colors text-[10px] opacity-50 hover:opacity-100"
+              className="w-11 h-8 flex items-center justify-center hover:bg-black/10 transition-colors text-current/75 hover:text-current"
               title={appCopy.minimize}
+              aria-label={appCopy.minimize}
+              type="button"
             >
-              -
+              <Minus size={14} strokeWidth={1.5} />
             </button>
             <button
               onClick={handleMaximize}
-              className="w-6 h-6 flex items-center justify-center rounded hover:bg-black/10 transition-colors text-[10px] opacity-50 hover:opacity-100"
+              className="w-11 h-8 flex items-center justify-center hover:bg-black/10 transition-colors text-current/75 hover:text-current"
               title={isMaximized ? appCopy.restore : appCopy.maximize}
+              aria-label={isMaximized ? appCopy.restore : appCopy.maximize}
+              type="button"
             >
-              {isMaximized ? '[]' : '[ ]'}
+              {isMaximized ? <Copy size={13} strokeWidth={1.4} /> : <Square size={12} strokeWidth={1.5} />}
             </button>
             <button
               onClick={handleClose}
-              className="w-6 h-6 flex items-center justify-center rounded hover:bg-red-500 hover:text-white transition-colors text-[10px] opacity-50 hover:opacity-100"
+              className="w-11 h-8 flex items-center justify-center hover:bg-[#c42b1c] hover:text-white transition-colors text-current/75 hover:opacity-100"
               title={appCopy.close}
+              aria-label={appCopy.close}
+              type="button"
             >
-              x
+              <X size={13} strokeWidth={1.5} />
             </button>
           </div>
         </div>
@@ -108,7 +135,11 @@ export default function App() {
 
       <div className="flex-1 min-h-0 overflow-hidden">
         {currentView === 'shelf' ? (
-          <Shelf onOpenBook={openBook} uiColor={currentTheme.ui} />
+          <Shelf
+            onOpenBook={openBook}
+            shelfTheme={shelfTheme}
+            onToggleShelfTheme={() => setShelfTheme((mode) => mode === 'light' ? 'dark' : 'light')}
+          />
         ) : (
           <AnimatePresence mode="wait">
             {activeBook && (
