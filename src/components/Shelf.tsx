@@ -242,8 +242,25 @@ export default function Shelf({
 
   useEffect(() => {
     const handleClick = () => setContextMenu(null);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const activeTag = (document.activeElement?.tagName || '').toLowerCase();
+      if (activeTag === 'input' || activeTag === 'textarea') return;
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        setIsNotesPanelOpen(true);
+      } else if (event.key === '/' && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        setIsNotesPanelOpen(true);
+      }
+    };
+
     document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('click', handleClick);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, []);
 
   useEffect(() => {
@@ -395,14 +412,14 @@ export default function Shelf({
                     <span className="text-xs font-serif uppercase tracking-widest">{book.format}</span>
                   </div>
                 )}
-                {!isRecentBook && <div className="absolute top-2 right-2 p-1.5 rounded-full bg-black/10 opacity-0 group-hover:opacity-100 transition-opacity"><GripVertical size={14} /></div>}
+                {!isRecentBook && <div className="absolute top-2 right-2 p-1.5 rounded-full bg-black/10 opacity-0 group-hover:opacity-100 transition-opacity z-10"><GripVertical size={14} /></div>}
                 {isRecentBook && (
-                  <span className="shelf-recent-badge absolute top-2 left-2 rounded-md px-2 py-1 text-[10px]">
+                  <span className="shelf-recent-badge absolute top-2 right-2 rounded-full px-2 py-0.5 text-[9px] font-medium tracking-wider shadow-sm z-10">
                     最近阅读
                   </span>
                 )}
-                <div className="shelf-cover-progress absolute bottom-0 left-0 h-1 w-full">
-                  <div className="h-full" style={{ width: `${book.progress}%` }} />
+                <div className="shelf-cover-progress absolute bottom-1.5 left-2 right-2 h-1 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full transition-all duration-300" style={{ width: `${book.progress}%` }} />
                 </div>
               </div>
               <h3 className="font-serif text-base leading-snug mb-1 group-hover:opacity-70 transition-opacity line-clamp-2">{book.title}</h3>
@@ -446,7 +463,7 @@ export default function Shelf({
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="shelf-acrylic-surface fixed z-50 py-2 rounded-xl border text-sm"
+              className="shelf-acrylic-surface fixed z-50 py-1.5 rounded-xl border text-xs min-w-[150px] shadow-xl overflow-hidden"
               style={{
                 left: contextMenu.x,
                 top: contextMenu.y,
@@ -454,8 +471,19 @@ export default function Shelf({
               }}
             >
               <button
+                onClick={() => {
+                  setContextMenu(null);
+                  setIsNotesPanelOpen(true);
+                }}
+                className="w-full text-left px-3.5 py-2 flex items-center gap-2 hover:bg-black/5 transition-colors"
+              >
+                <BookOpen size={14} className="opacity-60" />
+                查看书摘与笔记
+              </button>
+              <div className="h-[1px] my-1 bg-black/10 mx-1" />
+              <button
                 onClick={() => handleDeleteBook(contextMenu.bookId)}
-                className="w-full text-left px-4 py-2 flex items-center gap-2 hover:bg-black/10 transition-colors text-red-500"
+                className="w-full text-left px-3.5 py-2 flex items-center gap-2 hover:bg-red-50 hover:text-red-600 transition-colors text-red-500"
               >
                 <Trash2 size={14} />
                 {shelfCopy.deleteBook}

@@ -18,7 +18,7 @@ const THEMES = {
 };
 
 const SHELF_THEMES: Record<ShelfTheme, { bg: string; text: string }> = {
-  light: { bg: '#F5EFE5', text: '#3E3730' },
+  light: { bg: '#FCF8F2', text: '#2E261F' },
   dark: { bg: '#24221F', text: '#E7DFD2' },
 };
 
@@ -93,7 +93,7 @@ export default function App() {
       className={`w-full h-screen flex flex-col overflow-hidden font-sans selection:bg-black/10 ${currentView === 'shelf' ? 'shelf-canvas' : ''}`}
       data-shelf-theme={currentView === 'shelf' ? shelfTheme : undefined}
       style={{
-        backgroundColor: currentView === 'shelf' ? undefined : currentTheme.bg,
+        backgroundColor: currentView === 'shelf' ? currentShelfTheme.bg : currentTheme.bg,
         color: currentView === 'shelf' ? currentShelfTheme.text : currentTheme.text,
       }}
     >
