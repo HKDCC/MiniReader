@@ -93,7 +93,7 @@ export default function App() {
       className={`w-full h-screen flex flex-col overflow-hidden font-sans selection:bg-black/10 ${currentView === 'shelf' ? 'shelf-canvas' : ''}`}
       data-shelf-theme={currentView === 'shelf' ? shelfTheme : undefined}
       style={{
-        backgroundColor: currentView === 'shelf' ? currentShelfTheme.bg : currentTheme.bg,
+        backgroundColor: currentView === 'shelf' ? undefined : currentTheme.bg,
         color: currentView === 'shelf' ? currentShelfTheme.text : currentTheme.text,
       }}
     >

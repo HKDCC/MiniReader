@@ -122,112 +122,200 @@ input[type=range] {
   background: var(--progress-color);
 }
 
-/* Paper is the content layer; only interactive surfaces blur the backdrop. */
+/* ==========================================================================
+   MUJI Liquid Glass System
+   High translucency, prismatic specular highlights, ambient sunlight gradients,
+   and physical depth while maintaining MUJI's warm, wabi-sabi minimalism.
+   ========================================================================== */
+
 [data-shelf-theme="light"] {
   color-scheme: light;
-  --shelf-paper: rgba(251, 247, 239, 0.94);
-  --shelf-paper-hover: rgba(252, 249, 242, 0.98);
-  --shelf-acrylic: rgba(241, 234, 223, 0.72);
-  --shelf-edge: rgba(100, 78, 48, 0.14);
-  --shelf-highlight: rgba(255, 252, 243, 0.65);
-  --shelf-shadow: rgba(73, 54, 30, 0.08);
-  --shelf-control: rgba(251, 247, 239, 0.16);
-  --shelf-control-hover: rgba(251, 247, 239, 0.60);
-  --shelf-cover: #EBE3D5;
-  --shelf-badge: rgba(248, 241, 229, 0.96);
-  --shelf-field: rgba(98, 76, 47, 0.06);
-  --shelf-field-focus: rgba(98, 76, 47, 0.10);
-  --shelf-scrim: rgba(66, 51, 31, 0.15);
-  --shelf-progress: #74644D;
+  --shelf-bg-base: #F8F4ED;
+  --shelf-text-main: #3C352D;
+  --shelf-text-sub: #827566;
+
+  /* Liquid Glass Acrylic Surface (Toolbar, Floating Overlays) */
+  --shelf-acrylic: rgba(255, 255, 255, 0.68);
+  --shelf-acrylic-gradient: linear-gradient(135deg, rgba(255, 255, 255, 0.82) 0%, rgba(250, 246, 238, 0.48) 100%);
+
+  /* Liquid Glass Card Tray (Translucent glass platter holding paper books) */
+  --shelf-card-bg: linear-gradient(145deg, rgba(255, 255, 255, 0.64) 0%, rgba(248, 242, 232, 0.42) 100%);
+  --shelf-card-bg-hover: linear-gradient(145deg, rgba(255, 255, 255, 0.88) 0%, rgba(253, 249, 241, 0.66) 100%);
+
+  /* Specular Rim Light & Fresnel Edges (pure light reflection instead of muddy brown) */
+  --shelf-edge: rgba(255, 255, 255, 0.85);
+  --shelf-edge-subtle: rgba(200, 185, 162, 0.28);
+  --shelf-highlight: rgba(255, 255, 255, 0.95);
+  --shelf-inner-glow: rgba(255, 255, 255, 0.45);
+
+  /* Diffuse Ambient Warm Umber Shadows */
+  --shelf-shadow-sm: 0 2px 6px -1px rgba(92, 73, 49, 0.04), 0 1px 3px rgba(92, 73, 49, 0.02);
+  --shelf-shadow-md: 0 4px 14px -2px rgba(92, 73, 49, 0.06), 0 12px 28px -6px rgba(92, 73, 49, 0.07);
+  --shelf-shadow-lg: 0 8px 24px -4px rgba(92, 73, 49, 0.08), 0 24px 48px -8px rgba(92, 73, 49, 0.11);
+
+  /* Interactive Controls */
+  --shelf-control: rgba(255, 255, 255, 0.52);
+  --shelf-control-hover: rgba(255, 255, 255, 0.85);
+  --shelf-control-border: rgba(255, 255, 255, 0.70);
+
+  /* Subordinate Elements */
+  --shelf-cover: #EAE2D3;
+  --shelf-badge: rgba(255, 255, 255, 0.90);
+  --shelf-field: rgba(255, 255, 255, 0.55);
+  --shelf-field-focus: rgba(255, 255, 255, 0.92);
+  --shelf-scrim: rgba(45, 36, 26, 0.22);
+  --shelf-progress: #8A7760;
 }
 
 [data-shelf-theme="dark"] {
   color-scheme: dark;
-  --shelf-paper: rgba(49, 46, 40, 0.96);
-  --shelf-paper-hover: rgba(56, 52, 45, 0.98);
-  --shelf-acrylic: rgba(53, 49, 42, 0.76);
-  --shelf-edge: rgba(220, 203, 174, 0.13);
-  --shelf-highlight: rgba(255, 241, 215, 0.08);
-  --shelf-shadow: rgba(0, 0, 0, 0.22);
-  --shelf-control: rgba(224, 206, 178, 0.04);
-  --shelf-control-hover: rgba(224, 206, 178, 0.10);
-  --shelf-cover: #292620;
-  --shelf-badge: rgba(43, 39, 32, 0.96);
-  --shelf-field: rgba(0, 0, 0, 0.15);
-  --shelf-field-focus: rgba(0, 0, 0, 0.23);
-  --shelf-scrim: rgba(0, 0, 0, 0.28);
-  --shelf-progress: #C6B28D;
+  --shelf-bg-base: #1C1A17;
+  --shelf-text-main: #ECE3D4;
+  --shelf-text-sub: #A39683;
+
+  /* Smoked Obsidian Liquid Glass Surface */
+  --shelf-acrylic: rgba(38, 34, 29, 0.65);
+  --shelf-acrylic-gradient: linear-gradient(135deg, rgba(52, 46, 39, 0.72) 0%, rgba(32, 28, 24, 0.55) 100%);
+
+  --shelf-card-bg: linear-gradient(145deg, rgba(46, 41, 35, 0.60) 0%, rgba(32, 28, 23, 0.45) 100%);
+  --shelf-card-bg-hover: linear-gradient(145deg, rgba(58, 52, 44, 0.75) 0%, rgba(40, 35, 29, 0.60) 100%);
+
+  --shelf-edge: rgba(255, 255, 255, 0.18);
+  --shelf-edge-subtle: rgba(255, 255, 255, 0.08);
+  --shelf-highlight: rgba(255, 255, 255, 0.24);
+  --shelf-inner-glow: rgba(255, 255, 255, 0.08);
+
+  --shelf-shadow-sm: 0 2px 6px -1px rgba(0, 0, 0, 0.25);
+  --shelf-shadow-md: 0 4px 16px -2px rgba(0, 0, 0, 0.35), 0 14px 32px -6px rgba(0, 0, 0, 0.45);
+  --shelf-shadow-lg: 0 8px 24px -4px rgba(0, 0, 0, 0.45), 0 28px 56px -8px rgba(0, 0, 0, 0.55);
+
+  --shelf-control: rgba(255, 255, 255, 0.08);
+  --shelf-control-hover: rgba(255, 255, 255, 0.16);
+  --shelf-control-border: rgba(255, 255, 255, 0.12);
+
+  --shelf-cover: #26221C;
+  --shelf-badge: rgba(46, 40, 32, 0.92);
+  --shelf-field: rgba(0, 0, 0, 0.24);
+  --shelf-field-focus: rgba(0, 0, 0, 0.38);
+  --shelf-scrim: rgba(0, 0, 0, 0.50);
+  --shelf-progress: #C8B592;
 }
 
+/* Ambient Natural Sunlight Canvas */
 .shelf-canvas[data-shelf-theme="light"] {
-  background-image: linear-gradient(125deg, rgba(237, 225, 205, 0.20), transparent 48%, rgba(222, 209, 190, 0.14));
+  background-color: var(--shelf-bg-base);
+  background-image: 
+    radial-gradient(ellipse 75% 55% at 18% -5%, rgba(255, 255, 255, 0.95) 0%, transparent 65%),
+    radial-gradient(ellipse 65% 55% at 85% 15%, rgba(242, 232, 217, 0.70) 0%, transparent 60%),
+    radial-gradient(ellipse 80% 65% at 50% 100%, rgba(232, 219, 199, 0.45) 0%, transparent 65%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.45) 0%, rgba(238, 227, 210, 0.25) 100%);
+  background-attachment: fixed;
 }
 
 .shelf-canvas[data-shelf-theme="dark"] {
-  background-image: linear-gradient(125deg, rgba(91, 76, 52, 0.12), transparent 48%, rgba(14, 13, 11, 0.18));
+  background-color: var(--shelf-bg-base);
+  background-image: 
+    radial-gradient(ellipse 75% 55% at 20% -5%, rgba(68, 58, 46, 0.50) 0%, transparent 65%),
+    radial-gradient(ellipse 65% 55% at 85% 18%, rgba(52, 44, 34, 0.45) 0%, transparent 60%),
+    radial-gradient(ellipse 80% 65% at 50% 100%, rgba(22, 19, 16, 0.70) 0%, transparent 65%),
+    linear-gradient(135deg, rgba(42, 37, 30, 0.35) 0%, rgba(18, 16, 14, 0.60) 100%);
+  background-attachment: fixed;
 }
 
+/* Window Bar (Electron Drag Region) */
 .shelf-window-bar {
-  background-color: var(--shelf-acrylic);
-  border-bottom: 1px solid var(--shelf-edge);
-  box-shadow: inset 0 1px var(--shelf-highlight);
-  -webkit-backdrop-filter: blur(20px) saturate(1.08);
-  backdrop-filter: blur(20px) saturate(1.08);
+  background: var(--shelf-acrylic-gradient);
+  border-bottom: 1px solid var(--shelf-edge-subtle);
+  box-shadow: inset 0 1px 0 0 var(--shelf-highlight);
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+  backdrop-filter: blur(28px) saturate(140%);
 }
 
+/* Liquid Acrylic Surface (Toolbars, Overlays, Toast) */
 .shelf-acrylic-surface {
-  background-color: var(--shelf-acrylic);
-  /* A static, barely visible grain keeps the tint from looking like white fog. */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' opacity='.035' filter='url(%23n)'/%3E%3C/svg%3E");
-  border-color: var(--shelf-edge);
-  box-shadow: inset 0 0 0 1px var(--shelf-highlight), 0 2px 8px var(--shelf-shadow);
-  -webkit-backdrop-filter: blur(24px) saturate(1.08);
-  backdrop-filter: blur(24px) saturate(1.08);
+  background: var(--shelf-acrylic-gradient);
+  border: 1px solid var(--shelf-edge);
+  border-bottom-color: var(--shelf-edge-subtle);
+  box-shadow: 
+    inset 0 1px 1.5px 0 var(--shelf-highlight),
+    inset 0 0 18px 0 var(--shelf-inner-glow),
+    var(--shelf-shadow-md);
+  -webkit-backdrop-filter: blur(32px) saturate(145%) brightness(1.02);
+  backdrop-filter: blur(32px) saturate(145%) brightness(1.02);
 }
 
+/* Liquid Glass Cards (Book & Note Platter) */
 .shelf-paper-card,
 .shelf-note-card {
-  background-color: var(--shelf-paper);
-  border-color: var(--shelf-edge);
-  box-shadow: 0 1px 3px var(--shelf-shadow);
-}
-
-.shelf-paper-card {
-  transition: background-color 180ms ease, box-shadow 180ms ease;
+  background: var(--shelf-card-bg);
+  border: 1px solid var(--shelf-edge);
+  border-bottom-color: var(--shelf-edge-subtle);
+  border-radius: 16px;
+  box-shadow: 
+    inset 0 1px 1.5px 0 var(--shelf-highlight),
+    inset 0 0 14px 0 var(--shelf-inner-glow),
+    var(--shelf-shadow-md);
+  -webkit-backdrop-filter: blur(24px) saturate(135%);
+  backdrop-filter: blur(24px) saturate(135%);
+  transition: transform 240ms cubic-bezier(.2,.8,.2,1), 
+              box-shadow 240ms cubic-bezier(.2,.8,.2,1), 
+              background 200ms ease, 
+              border-color 200ms ease;
   touch-action: pan-y;
 }
 
 .shelf-paper-card:hover,
 button.shelf-note-card:hover {
-  background-color: var(--shelf-paper-hover);
-  box-shadow: 0 2px 5px var(--shelf-shadow);
+  transform: translateY(-4px);
+  background: var(--shelf-card-bg-hover);
+  border-color: rgba(255, 255, 255, 0.95);
+  box-shadow: 
+    inset 0 1px 2px 0 #ffffff,
+    inset 0 0 18px 0 var(--shelf-inner-glow),
+    var(--shelf-shadow-lg);
 }
 
+/* Controls & Buttons */
 .shelf-control {
   color: inherit;
-  background-color: var(--shelf-control);
-  border: 1px solid var(--shelf-edge);
+  background: var(--shelf-control);
+  border: 1px solid var(--shelf-control-border);
+  box-shadow: inset 0 1px 0.5px 0 var(--shelf-highlight);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  transition: all 160ms ease;
 }
 
 .shelf-control:hover {
-  background-color: var(--shelf-control-hover);
+  background: var(--shelf-control-hover);
+  border-color: rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 1px 1px 0 #ffffff, var(--shelf-shadow-sm);
 }
 
+/* Top Toolbar */
 .shelf-toolbar {
   position: sticky;
-  top: 12px;
-  border-radius: 16px;
+  top: 14px;
+  border-radius: 20px;
+  box-shadow: 
+    inset 0 1px 1.5px 0 var(--shelf-highlight),
+    inset 0 0 16px 0 var(--shelf-inner-glow),
+    var(--shelf-shadow-md);
   transition: top 240ms cubic-bezier(.2,.8,.2,1), border-radius 240ms ease, box-shadow 240ms ease;
 }
 
 .shelf-toolbar[data-docked="true"] {
   top: 0;
-  border-radius: 0 0 14px 14px;
-  box-shadow: inset 0 0 0 1px var(--shelf-highlight), 0 3px 9px var(--shelf-shadow);
+  border-radius: 0 0 18px 18px;
+  border-top-color: transparent;
+  box-shadow: 
+    inset 0 1px 1px 0 var(--shelf-highlight),
+    var(--shelf-shadow-md);
 }
 
 .shelf-brand {
   font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  letter-spacing: -0.02em;
   transition: opacity 240ms ease;
 }
 
@@ -246,13 +334,16 @@ button.shelf-note-card:hover {
   justify-content: center;
   width: 40px;
   height: 40px;
-  border-radius: 11px;
-  border-color: transparent;
-  transition: background-color 160ms ease, border-color 160ms ease;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: all 160ms ease;
 }
 
 .shelf-icon-button:hover {
-  border-color: var(--shelf-edge);
+  background: var(--shelf-control-hover);
+  border-color: var(--shelf-control-border);
+  box-shadow: inset 0 1px 1px 0 var(--shelf-highlight), var(--shelf-shadow-sm);
 }
 
 .shelf-tooltip {
@@ -261,15 +352,16 @@ button.shelf-note-card:hover {
   left: 50%;
   transform: translate(-50%, -3px);
   z-index: 30;
-  padding: 6px 10px;
+  padding: 6px 11px;
   border: 1px solid var(--shelf-edge);
-  border-radius: 8px;
+  border-radius: 9px;
   font-size: 11px;
   line-height: 1.5;
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
+  box-shadow: var(--shelf-shadow-md);
   transition: opacity 140ms ease, transform 140ms ease, visibility 0s linear 140ms;
 }
 
@@ -277,7 +369,7 @@ button.shelf-note-card:hover {
   opacity: 1;
   visibility: visible;
   transform: translate(-50%, 0);
-  transition-delay: 1s, 1s, 1s;
+  transition-delay: 0.8s, 0.8s, 0.8s;
 }
 
 .shelf-action:has(button:focus-visible) .shelf-tooltip {
@@ -288,13 +380,14 @@ button.shelf-note-card:hover {
 }
 
 .shelf-theme-switch {
-  width: 60px;
+  width: 58px;
   background: transparent;
 }
 
 .shelf-switch-track {
   fill: var(--shelf-field);
-  stroke: var(--shelf-edge);
+  stroke: var(--shelf-edge-subtle);
+  transition: fill 200ms ease, stroke 200ms ease;
 }
 
 .shelf-switch-thumb {
@@ -307,9 +400,10 @@ button.shelf-note-card:hover {
 }
 
 .shelf-switch-thumb > circle {
-  fill: var(--shelf-paper);
+  fill: var(--shelf-acrylic);
   stroke: var(--shelf-edge);
-  stroke-width: 0.5;
+  stroke-width: 0.75;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
 }
 
 .shelf-is-reordering,
@@ -319,7 +413,9 @@ button.shelf-note-card:hover {
 }
 
 .shelf-drag-ghost {
-  box-shadow: 0 8px 20px var(--shelf-shadow), 0 2px 5px var(--shelf-shadow) !important;
+  box-shadow: 
+    inset 0 1px 2px 0 #ffffff,
+    0 16px 36px var(--shelf-shadow-lg) !important;
   will-change: transform;
 }
 
@@ -334,18 +430,34 @@ button.shelf-note-card:hover {
   50% { transform: rotate(0.35deg); }
 }
 
+/* Book Cover (Physical Paper Volume Resting on Glass) */
 .shelf-cover {
+  border-radius: 10px;
   background-color: var(--shelf-cover);
-  border-color: var(--shelf-edge);
-  box-shadow: 0 1px 2px var(--shelf-shadow);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 
+    0 2px 6px -1px rgba(0, 0, 0, 0.08), 
+    0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: transform 220ms ease, box-shadow 220ms ease;
+}
+
+.shelf-paper-card:hover .shelf-cover {
+  box-shadow: 
+    0 6px 16px -2px rgba(0, 0, 0, 0.12), 
+    0 2px 6px rgba(0, 0, 0, 0.06);
 }
 
 .shelf-recent-badge {
-  background-color: var(--shelf-badge);
+  background: var(--shelf-badge);
+  border: 1px solid var(--shelf-edge);
+  box-shadow: inset 0 1px 0.5px var(--shelf-highlight), var(--shelf-shadow-sm);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  font-weight: 500;
 }
 
 .shelf-cover-progress {
-  background-color: var(--shelf-badge);
+  background-color: rgba(0, 0, 0, 0.06);
 }
 
 .shelf-cover-progress > div {
@@ -354,18 +466,24 @@ button.shelf-note-card:hover {
 
 .shelf-modal-scrim {
   background-color: var(--shelf-scrim);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
 }
 
 .shelf-panel-header {
-  border-color: var(--shelf-edge);
+  border-color: var(--shelf-edge-subtle);
 }
 
 .shelf-field {
   background-color: var(--shelf-field);
+  border: 1px solid var(--shelf-edge);
+  box-shadow: inset 0 1px 1px 0 rgba(0, 0, 0, 0.03);
 }
 
 .shelf-field:focus {
   background-color: var(--shelf-field-focus);
+  border-color: var(--shelf-highlight);
+  box-shadow: inset 0 1px 2px 0 rgba(0, 0, 0, 0.04), 0 0 0 2px rgba(255, 255, 255, 0.3);
 }
 
 .shelf-toast[data-status="success"] {
