@@ -1,8 +1,27 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-const validInvokeChannels = new Set(['window:isMaximized', 'notes:export-pdf', 'files:read', 'files:consume-opened']);
+const validInvokeChannels = new Set([
+  'window:isMaximized',
+  'notes:export-pdf',
+  'files:read',
+  'files:consume-opened',
+  'dict:lookup',
+  'dict:lemmatize',
+  'dict:batch-lookup',
+  'dict:status',
+  'dict:resolve-span',
+  'llm:status',
+  'llm:explain',
+  'llm:cancel',
+]);
 const validSendChannels = new Set(['window:minimize', 'window:maximize', 'window:close']);
-const validOnChannels = new Set(['files:opened', 'window:maximized-changed']);
+const validOnChannels = new Set([
+  'files:opened',
+  'window:maximized-changed',
+  'llm:delta',
+  'llm:done',
+  'llm:error',
+]);
 type Listener = (...args: unknown[]) => void;
 const listeners = new Map<string, Map<Listener, (...args: unknown[]) => void>>();
 

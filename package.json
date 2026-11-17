@@ -12,6 +12,9 @@
     "clean": "node scripts/clean.mjs",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
+    "test": "node scripts/test-reader-regressions.cjs",
+    "test:span": "node scripts/build-electron.mjs && node scripts/test-span-resolve.cjs",
+    "test:llm": "node scripts/build-electron.mjs && node scripts/test-llm-ollama.cjs",
     "electron:dev": "npm run electron:build && electron . --dev",
     "electron:build": "node scripts/build-electron.mjs && vite build",
     "electron:dist": "npm run clean && npm run electron:build && electron-builder --win --config electron-builder.json"

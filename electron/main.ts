@@ -1,8 +1,12 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { promises as fs } from 'fs';
+import { randomUUID } from 'node:crypto';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { exportNotesPdf } from './notesPdf';
+import { dictEngine } from './dictEngine';
+import { llmEngine } from './llmEngine';
+import type { LlmExplainRequest, LlmModelTier } from '../src/shared/llmTypes';
 
 const APP_USER_MODEL_ID = 'com.quaxstudio.minireader';
 const appIconPath = process.platform === 'win32' && app.isPackaged
@@ -41,6 +45,30 @@ async function validateReadablePath(value: unknown) {
 function isTrustedRenderer(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) {
   const url = event.senderFrame?.url || '';
   return url.startsWith('file://') || /^https?:\/\/(localhost|127\.0\.0\.1):3000(?:\/|$)/.test(url);
+}
+
+const LLM_TIERS: LlmModelTier[] = ['auto', 'qwen3.5:9b', 'qwen3.5:4b', 'qwen3.5:2b'];
+
+function normalizeTier(value: unknown): LlmModelTier {
+  return LLM_TIERS.includes(value as LlmModelTier) ? (value as LlmModelTier) : 'auto';
+}
+
+function normalizeExplainRequest(value: unknown): LlmExplainRequest | null {
+  if (!value || typeof value !== 'object') return null;
+  const payload = value as Record<string, unknown>;
+  const span = typeof payload.span === 'string' ? payload.span.trim().slice(0, 200) : '';
+  if (!span) return null;
+
+  const kind =
+    payload.kind === 'phrase' || payload.kind === 'sentence' ? payload.kind : 'word';
+
+  return {
+    span,
+    context: typeof payload.context === 'string' ? payload.context.trim().slice(0, 400) : '',
+    ruleSummary:
+      typeof payload.ruleSummary === 'string' ? payload.ruleSummary.slice(0, 400) : '',
+    kind,
+  };
 }
 
 function queueOpenFiles(paths: string[]) {
@@ -104,11 +132,78 @@ function createWindow() {
     if (files.length > 0) mainWindow?.webContents.send('files:opened', files);
   });
   mainWindow.on('closed', () => {
+    llmEngine.abortAll();
     mainWindow = null;
   });
 }
 
 function registerIpcHandlers() {
+  ipcMain.handle('dict:lookup', async (event, word: string) => {
+    if (!isTrustedRenderer(event)) throw new Error('不受信任的渲染器');
+    return dictEngine.lookup(word);
+  });
+
+  ipcMain.handle('dict:lemmatize', async (event, word: string) => {
+    if (!isTrustedRenderer(event)) throw new Error('不受信任的渲染器');
+    return dictEngine.lemmatize(word);
+  });
+
+  ipcMain.handle('dict:batch-lookup', async (event, words: string[]) => {
+    if (!isTrustedRenderer(event)) throw new Error('不受信任的渲染器');
+    return dictEngine.batchLookup(words);
+  });
+
+  ipcMain.handle('dict:status', async (event) => {
+    if (!isTrustedRenderer(event)) throw new Error('不受信任的渲染器');
+    return { available: dictEngine.isAvailable() };
+  });
+
+  ipcMain.handle('dict:resolve-span', async (event, raw: unknown) => {
+    if (!isTrustedRenderer(event)) throw new Error('不受信任的渲染器');
+    if (typeof raw !== 'string') return null;
+    return dictEngine.resolveSpan(raw.slice(0, 200));
+  });
+
+  ipcMain.handle('llm:status', async (event, payload: unknown) => {
+    if (!isTrustedRenderer(event)) throw new Error('不受信任的渲染器');
+    const options = (payload ?? {}) as Record<string, unknown>;
+    const provider = options.provider === 'bundled' ? 'bundled' : 'ollama';
+    return llmEngine.status(provider, normalizeTier(options.tier));
+  });
+
+  ipcMain.handle('llm:explain', async (event, payload: unknown) => {
+    if (!isTrustedRenderer(event)) throw new Error('不受信任的渲染器');
+
+    const options = (payload ?? {}) as Record<string, unknown>;
+    const request = normalizeExplainRequest(options.request);
+    if (!request) throw new Error('无效的解释请求');
+
+    const requestId = randomUUID();
+    const tier = normalizeTier(options.tier);
+    const sender = event.sender;
+
+    // 立即返回 requestId，结果通过事件推回，避免 IPC 握手被推理阻塞。
+    void (async () => {
+      try {
+        const result = await llmEngine.explain(requestId, request, tier, (chars) => {
+          if (!sender.isDestroyed()) sender.send('llm:delta', { requestId, chars });
+        });
+        if (!sender.isDestroyed()) sender.send('llm:done', { requestId, result });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!sender.isDestroyed()) sender.send('llm:error', { requestId, message });
+      }
+    })();
+
+    return { requestId };
+  });
+
+  ipcMain.handle('llm:cancel', async (event, requestId: unknown) => {
+    if (!isTrustedRenderer(event)) throw new Error('不受信任的渲染器');
+    if (typeof requestId === 'string') llmEngine.cancel(requestId);
+    return true;
+  });
+
   ipcMain.handle('notes:export-pdf', async (event, payload) => {
     if (!isTrustedRenderer(event)) throw new Error('不受信任的渲染器');
     return exportNotesPdf(payload);

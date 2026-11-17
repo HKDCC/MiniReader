@@ -41,7 +41,7 @@ export const readerCopy = {
   notePlaceholder: '\u5199\u4E0B\u4F60\u7684\u60F3\u6CD5...',
   cancel: '\u53D6\u6D88',
   save: '\u4FDD\u5B58',
-  yellow: '\u67E0\u6AAC\u9EC4',
+  blue: '\u5929\u7A7A\u84DD',
   green: '\u8584\u8377\u7EFF',
   red: '\u73CA\u745A\u7C89',
   addNote: '+ \u6DFB\u52A0\u7B14\u8BB0',

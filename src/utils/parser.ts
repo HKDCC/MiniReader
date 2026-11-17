@@ -1,4 +1,5 @@
 import ePub from 'epubjs';
+import JSZip from 'jszip';
 import { BookMeta, db } from '../db/db';
 import { parserCopy } from '../shared/copy';
 import { hashContent } from './contentHash';
@@ -134,23 +135,247 @@ async function detectFileFormat(file: File) {
   return null;
 }
 
-async function extractEpubCover(book: any) {
-  try {
-    const coverUrl = await book.coverUrl();
-    if (!coverUrl) return undefined;
+function getMimeType(fileName: string): string {
+  const ext = fileName.toLowerCase().split('.').pop();
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    case 'svg':
+      return 'image/svg+xml';
+    default:
+      return 'image/jpeg';
+  }
+}
 
-    const response = await fetch(coverUrl);
-    if (!response.ok) return undefined;
-    const blob = await response.blob();
-    return await new Promise<string>((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.readAsDataURL(blob);
-    });
+function resolveZipPath(baseDir: string, href: string): string | null {
+  if (!href) return null;
+  href = href.trim().split('#')[0];
+  if (href.startsWith('/')) href = href.slice(1);
+  const full = (baseDir || '') + href;
+  const parts = full.split('/');
+  const resolved: string[] = [];
+  for (const p of parts) {
+    if (p === '.' || !p) continue;
+    if (p === '..') resolved.pop();
+    else resolved.push(p);
+  }
+  return resolved.join('/');
+}
+
+function findEntryInZip(zip: JSZip, pathStr: string): JSZip.JSZipObject | null {
+  if (!pathStr) return null;
+  const clean = pathStr.replace(/^\/+/, '');
+  const decoded = decodeURIComponent(clean);
+  return zip.file(clean) || zip.file(decoded) || zip.file(pathStr);
+}
+
+async function extractCoverFromZip(zip: JSZip): Promise<JSZip.JSZipObject | null> {
+  const container = zip.file('META-INF/container.xml');
+  if (!container) return null;
+  const containerXml = await container.async('text');
+  const opfMatch = containerXml.match(/full-path="([^"]+)"/i);
+  if (!opfMatch) return null;
+
+  const opfPath = opfMatch[1];
+  const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+  const opfFile = findEntryInZip(zip, opfPath);
+  if (!opfFile) return null;
+  const opfText = await opfFile.async('text');
+
+  // Strategy 1: <item ... properties="...cover-image..." ...>
+  const propMatch = opfText.match(/<item[^>]*properties=["'][^"']*cover-image[^"']*["'][^>]*>/i);
+  if (propMatch) {
+    const hrefMatch = propMatch[0].match(/href=["']([^"']+)["']/i);
+    if (hrefMatch) {
+      const p = resolveZipPath(opfDir, hrefMatch[1]);
+      if (p) {
+        const entry = findEntryInZip(zip, p);
+        if (entry) return entry;
+      }
+    }
+  }
+
+  // Strategy 2: <meta name="cover" content="coverId" /> -> find item by id
+  const metaMatch =
+    opfText.match(/<meta[^>]*name=["']cover["'][^>]*content=["']([^"']+)["']/i) ||
+    opfText.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']cover["']/i);
+  if (metaMatch) {
+    const coverId = metaMatch[1];
+    const itemMatch =
+      opfText.match(new RegExp('<item[^>]*id=["\']' + coverId + '["\'][^>]*>', 'i')) ||
+      opfText.match(new RegExp('<item[^>]*href=["\'][^"\']+["\'][^>]*id=["\']' + coverId + '["\']', 'i'));
+    if (itemMatch) {
+      const hrefMatch = itemMatch[0].match(/href=["']([^"']+)["']/i);
+      if (hrefMatch) {
+        const p = resolveZipPath(opfDir, hrefMatch[1]);
+        if (p) {
+          const entry = findEntryInZip(zip, p);
+          if (entry) return entry;
+        }
+      }
+    }
+  }
+
+  // Strategy 3: <item ... id="...cover..." ... media-type="image/..."> or href="...cover..."
+  const itemTags = opfText.match(/<item[^>]+>/gi) || [];
+  for (const tag of itemTags) {
+    const isImage = /media-type=["']image\//i.test(tag);
+    const hasCoverIdOrHref = /id=["'][^"']*cover[^"']*["']/i.test(tag) || /href=["'][^"']*cover[^"']*["']/i.test(tag);
+    if (isImage && hasCoverIdOrHref) {
+      const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
+      if (hrefMatch) {
+        const p = resolveZipPath(opfDir, hrefMatch[1]);
+        if (p) {
+          const entry = findEntryInZip(zip, p);
+          if (entry) return entry;
+        }
+      }
+    }
+  }
+
+  // Strategy 4: guide <reference type="cover" href="...">
+  const guideMatch = opfText.match(/<reference[^>]*type=["']cover["'][^>]*href=["']([^"']+)["']/i);
+  if (guideMatch) {
+    const refHref = resolveZipPath(opfDir, guideMatch[1]);
+    if (refHref) {
+      if (/\.(jpe?g|png|webp|gif|svg)$/i.test(refHref)) {
+        const entry = findEntryInZip(zip, refHref);
+        if (entry) return entry;
+      }
+      const htmlFile = findEntryInZip(zip, refHref);
+      if (htmlFile) {
+        const htmlText = await htmlFile.async('text');
+        const imgMatch = htmlText.match(/<img[^>]*src=["']([^"']+)["']/i) || htmlText.match(/<image[^>]*href=["']([^"']+)["']/i);
+        if (imgMatch) {
+          const htmlDir = refHref.includes('/') ? refHref.slice(0, refHref.lastIndexOf('/') + 1) : '';
+          const p = resolveZipPath(htmlDir, imgMatch[1]);
+          if (p) {
+            const entry = findEntryInZip(zip, p);
+            if (entry) return entry;
+          }
+        }
+      }
+    }
+  }
+
+  // Strategy 5: first spine item page if it contains an image
+  const firstSpine = opfText.match(/<itemref[^>]+idref=["']([^"']+)["']/i);
+  if (firstSpine) {
+    const idref = firstSpine[1];
+    const itemMatch = opfText.match(new RegExp('<item[^>]*id=["\']' + idref + '["\'][^>]*>', 'i'));
+    if (itemMatch) {
+      const hrefMatch = itemMatch[0].match(/href=["']([^"']+)["']/i);
+      if (hrefMatch) {
+        const pageHref = resolveZipPath(opfDir, hrefMatch[1]);
+        if (pageHref) {
+          const pageFile = findEntryInZip(zip, pageHref);
+          if (pageFile) {
+            const pageText = await pageFile.async('text');
+            const imgMatch = pageText.match(/<img[^>]*src=["']([^"']+)["']/i) || pageText.match(/<image[^>]*href=["']([^"']+)["']/i);
+            if (imgMatch) {
+              const pageDir = pageHref.includes('/') ? pageHref.slice(0, pageHref.lastIndexOf('/') + 1) : '';
+              const p = resolveZipPath(pageDir, imgMatch[1]);
+              if (p) {
+                const entry = findEntryInZip(zip, p);
+                if (entry) return entry;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Strategy 6: any image in zip matching cover
+  for (const f of Object.keys(zip.files)) {
+    if (/\.(jpe?g|png|webp|gif|svg)$/i.test(f) && /cover/i.test(f)) {
+      const entry = zip.file(f);
+      if (entry) return entry;
+    }
+  }
+
+  return null;
+}
+
+export async function extractEpubCoverFromBuffer(arrayBuffer: ArrayBuffer): Promise<string | undefined> {
+  try {
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const entry = await extractCoverFromZip(zip);
+    if (!entry) return undefined;
+
+    const base64 = await entry.async('base64');
+    const mime = getMimeType(entry.name);
+    return `data:${mime};base64,${base64}`;
   } catch (error) {
-    console.warn('Failed to extract cover from EPUB', error);
+    console.warn('Failed to extract cover from EPUB buffer', error);
     return undefined;
   }
+}
+
+async function extractEpubCover(book: any, arrayBuffer?: ArrayBuffer): Promise<string | undefined> {
+  if (arrayBuffer) {
+    const fromBuffer = await extractEpubCoverFromBuffer(arrayBuffer);
+    if (fromBuffer) return fromBuffer;
+  }
+
+  try {
+    const coverPath = await book.loaded.cover;
+    if (coverPath && book.archive?.zip) {
+      const entry = findEntryInZip(book.archive.zip, coverPath);
+      if (entry) {
+        const base64 = await entry.async('base64');
+        const mime = getMimeType(entry.name);
+        return `data:${mime};base64,${base64}`;
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to extract cover from epubjs book instance', error);
+  }
+
+  return undefined;
+}
+
+const attemptedCoverRepairs = new Set<string>();
+let coverRepairQueue = Promise.resolve();
+
+export function repairMissingBookCovers(books: BookMeta[]) {
+  for (const book of books) {
+    if (book.format === 'txt' || (book.cover && !book.cover.startsWith('blob:')) || attemptedCoverRepairs.has(book.id)) {
+      continue;
+    }
+    attemptedCoverRepairs.add(book.id);
+    coverRepairQueue = coverRepairQueue.then(async () => {
+      try {
+        const content = await db.contents.get(book.id);
+        if (!(content?.data instanceof ArrayBuffer)) return;
+
+        let cover: string | undefined;
+        if (book.format === 'epub') {
+          cover = await extractEpubCoverFromBuffer(content.data);
+        } else if (book.format === 'pdf') {
+          cover = await extractPdfCover(content.data);
+        }
+        if (!cover) return;
+
+        await db.transaction('rw', db.books, async () => {
+          const current = await db.books.get(book.id);
+          if (current && (!current.cover || current.cover.startsWith('blob:'))) {
+            await db.books.update(book.id, { cover });
+          }
+        });
+      } catch (error) {
+        console.warn(`Failed to repair cover for book ${book.id} (${book.title})`, error);
+      }
+    });
+  }
+  return coverRepairQueue;
 }
 
 async function extractPdfCover(arrayBuffer: ArrayBuffer) {
@@ -207,7 +432,7 @@ export const importFile = async (file: File): Promise<ImportFileResult> => {
     const book = ePub(arrayBuffer.slice(0));
     try {
       const metadata = await book.loaded.metadata;
-      const cover = await extractEpubCover(book);
+      const cover = await extractEpubCover(book, arrayBuffer);
 
       return saveImportedBook(arrayBuffer, {
         title: metadata.title || getTitle(file, 'epub'),

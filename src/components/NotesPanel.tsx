@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, Download, Trash2, FileText, FileDown, X } from 'lucide-react';
+import { Search, Download, Trash2, FileText, FileDown } from 'lucide-react';
+import ReaderPanelTabs from './ReaderPanelTabs';
 import type { Paragraph as DocxParagraph } from 'docx';
 import { Note } from '../db/db';
 import { notesCopy } from '../shared/copy';
@@ -14,12 +15,16 @@ export default function NotesPanel({
   notes,
   onDeleteNote,
   onClose,
+  onSwitchTab,
+  vocabCount,
 }: {
   uiColor: string;
   textColor: string;
   notes: Note[];
   onDeleteNote: (id: number) => void;
   onClose: () => void;
+  onSwitchTab: (tab: 'notes' | 'vocab') => void;
+  vocabCount: number;
 }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -113,54 +118,55 @@ export default function NotesPanel({
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, x: -20 }}
+    <motion.aside
+      data-reader-panel
+      initial={{ opacity: 0, x: -24 }}
       animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      className="absolute top-24 left-8 w-[22rem] h-[calc(100vh-12rem)] p-6 rounded-2xl shadow-2xl backdrop-blur-xl z-50 flex flex-col border"
+      exit={{ opacity: 0, x: -24 }}
+      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+      className="reader-paper absolute bottom-0 left-0 top-[54px] z-50 flex w-[22rem] max-w-full flex-col border-r"
       style={{
-        backgroundColor: `${uiColor}E6`,
+        backgroundColor: uiColor,
         color: textColor,
-        borderColor: `${textColor}15`,
+        borderColor: `${textColor}14`,
       }}
     >
-      <div className="flex justify-between items-center mb-6 relative">
-        <h3 className="text-xs tracking-widest opacity-50 font-sans">{notesCopy.title}</h3>
-        <div className="flex items-center gap-2">
+      <div className="relative flex h-[56px] shrink-0 items-center justify-between border-b px-5" style={{ borderColor: `${textColor}12` }}>
+        <ReaderPanelTabs active="notes" onSwitch={onSwitchTab} vocabCount={vocabCount} />
+        <div className="flex items-center gap-1">
           <div className="relative">
-            <button onClick={() => setShowExportMenu((previous) => !previous)} className="opacity-50 hover:opacity-100 transition-opacity" title={notesCopy.export}>
-              <Download size={16} strokeWidth={1.5} />
+            <button onClick={() => setShowExportMenu((previous) => !previous)} className="reader-icon-button !h-7 !w-7" title={notesCopy.export} aria-label={notesCopy.export}>
+              <Download size={15} strokeWidth={1.6} />
             </button>
 
             <AnimatePresence>
               {showExportMenu && (
                 <motion.div
-                  initial={{ opacity: 0, scale: 0.9, y: -10 }}
+                  initial={{ opacity: 0, scale: 0.96, y: -6 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.9, y: -10 }}
-                  className="absolute right-0 top-6 w-36 rounded-xl shadow-xl backdrop-blur-xl border overflow-hidden z-50"
-                  style={{ backgroundColor: `${uiColor}EE`, borderColor: `${textColor}20` }}
+                  exit={{ opacity: 0, scale: 0.96, y: -6 }}
+                  className="absolute right-0 top-8 z-50 w-40 overflow-hidden rounded border"
+                  style={{ backgroundColor: uiColor, borderColor: `${textColor}18` }}
                 >
-                  <button onClick={handleExportMarkdown} className="w-full text-left px-4 py-2 text-xs hover:bg-current/10 flex items-center gap-2">
+                  <button onClick={handleExportMarkdown} className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs hover:bg-current/10">
                     <FileText size={12} /> Markdown
                   </button>
-                  <button onClick={handleExportDocx} className="w-full text-left px-4 py-2 text-xs hover:bg-current/10 flex items-center gap-2">
+                  <button onClick={handleExportDocx} className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs hover:bg-current/10">
                     <FileText size={12} /> DOCX
                   </button>
-                  <button onClick={handleExportPdf} className="w-full text-left px-4 py-2 text-xs hover:bg-current/10 flex items-center gap-2">
+                  <button onClick={handleExportPdf} className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs hover:bg-current/10">
                     <FileDown size={12} /> PDF
                   </button>
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
-          <button onClick={onClose} className="opacity-50 hover:opacity-100 transition-opacity" title={notesCopy.close}>
-            <X size={16} strokeWidth={1.5} />
-          </button>
+          <button onClick={onClose} className="reader-panel-close" title={notesCopy.close} aria-label={notesCopy.close}>×</button>
         </div>
       </div>
 
-      <div className="relative mb-6">
+      <div className="flex min-h-0 flex-1 flex-col px-5 pb-4">
+      <div className="relative my-4">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-40" />
         <input
           type="text"
@@ -172,7 +178,7 @@ export default function NotesPanel({
         />
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-6 pr-2 custom-scrollbar">
+      <div className="min-h-0 flex-1 overflow-y-auto space-y-6 pr-1 custom-scrollbar">
         {filteredNotes.length === 0 ? (
           <div className="text-xs opacity-40 text-center mt-10">{notesCopy.empty}</div>
         ) : (
@@ -194,6 +200,7 @@ export default function NotesPanel({
           ))
         )}
       </div>
-    </motion.div>
+      </div>
+    </motion.aside>
   );
 }

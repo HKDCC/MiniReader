@@ -6,20 +6,19 @@ import Reader from './components/Reader';
 import { BookMeta } from './db/db';
 import { appCopy } from './shared/copy';
 
-export type Theme = 'warm-white' | 'beige' | 'eye-care' | 'dark' | 'night';
+export type Theme = 'warm-white' | 'kraft' | 'dark' | 'night';
 type ShelfTheme = 'light' | 'dark';
 
 const THEMES = {
-  'warm-white': { bg: '#F5F0EB', text: '#2C2C2C', ui: '#ECEBEA' },
-  beige: { bg: '#F5F5DC', text: '#3E352B', ui: '#EAEAD1' },
-  'eye-care': { bg: '#E8F0E6', text: '#2C3E2D', ui: '#DCE5DA' },
-  dark: { bg: '#2C2C2C', text: '#E0E0E0', ui: '#3A3A3A' },
+  'warm-white': { bg: '#F6F3EA', text: '#23261F', ui: '#F0ECE1' },
+  kraft: { bg: '#F0EADA', text: '#2A2720', ui: '#E9E3D2' },
+  dark: { bg: '#191B17', text: '#E5E2D7', ui: '#141612' },
   night: { bg: '#000000', text: '#E0E0E0', ui: '#111111' },
 };
 
 const SHELF_THEMES: Record<ShelfTheme, { bg: string; text: string }> = {
-  light: { bg: '#FCF8F2', text: '#2E261F' },
-  dark: { bg: '#24221F', text: '#E7DFD2' },
+  light: { bg: '#F4F4F0', text: '#20231F' },
+  dark: { bg: '#171917', text: '#E8EAE4' },
 };
 
 const isElectron = () => typeof window !== 'undefined' && !!(window as any).electron;
@@ -28,8 +27,9 @@ export default function App() {
   const [currentView, setCurrentView] = useState<'shelf' | 'reader'>('shelf');
   const [activeBook, setActiveBook] = useState<BookMeta | null>(null);
   const [theme, setTheme] = useState<Theme>(() => {
-    const saved = localStorage.getItem('mr_theme') as Theme | null;
-    return saved && Object.prototype.hasOwnProperty.call(THEMES, saved) ? saved : 'warm-white';
+    const saved = localStorage.getItem('mr_theme');
+    if (saved === 'beige' || saved === 'eye-care') return 'kraft';
+    return saved && Object.prototype.hasOwnProperty.call(THEMES, saved) ? (saved as Theme) : 'warm-white';
   });
   const [shelfTheme, setShelfTheme] = useState<ShelfTheme>(() => localStorage.getItem('mr_shelfTheme') === 'dark' ? 'dark' : 'light');
   const [isMaximized, setIsMaximized] = useState(false);
@@ -82,7 +82,7 @@ export default function App() {
   };
 
   const dragStyle = {
-    backgroundColor: currentView === 'shelf' ? undefined : currentTheme.ui,
+    backgroundColor: currentView === 'shelf' ? undefined : currentTheme.bg,
     WebkitAppRegion: 'drag',
   } as any;
 
@@ -95,11 +95,19 @@ export default function App() {
       style={{
         backgroundColor: currentView === 'shelf' ? currentShelfTheme.bg : currentTheme.bg,
         color: currentView === 'shelf' ? currentShelfTheme.text : currentTheme.text,
+        colorScheme:
+          currentView === 'shelf'
+            ? shelfTheme === 'dark'
+              ? 'dark'
+              : 'light'
+            : theme === 'dark' || theme === 'night'
+              ? 'dark'
+              : 'light',
       }}
     >
       {isElectron() && (
         <div className={`h-8 flex items-center justify-between px-3 select-none shrink-0 ${currentView === 'shelf' ? 'shelf-window-bar' : ''}`} style={dragStyle}>
-          <div className="flex-1 truncate text-[11px] opacity-40 pr-4">{currentView === 'reader' && activeBook ? activeBook.title : appCopy.appName}</div>
+          <div className="flex-1 truncate text-[11px] opacity-40 pr-4">{currentView === 'reader' ? '' : appCopy.appName}</div>
 
           <div className="flex items-center" style={noDragStyle}>
             <button

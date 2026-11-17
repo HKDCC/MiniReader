@@ -1,6 +1,6 @@
 const BUILT_IN_FONT_STACKS: Record<string, string> = {
   'LXGW WenKai': '"LXGW WenKai", "KaiTi", "STKaiti", serif',
-  'Source Han Serif SC': '"Source Han Serif SC", "SimSun", "Songti SC", serif',
+  'Source Han Serif SC': '"Source Han Serif SC", "Noto Serif SC", "SimSun", "Songti SC", serif',
   'Microsoft YaHei': '"Microsoft YaHei", "Microsoft Yahei UI", sans-serif',
   'Segoe UI': '"Segoe UI", Arial, sans-serif',
 };

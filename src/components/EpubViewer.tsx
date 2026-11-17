@@ -1,12 +1,25 @@
-import React, { useEffect, useRef, useImperativeHandle, forwardRef, useState } from 'react';
+import React, { useEffect, useRef, useImperativeHandle, forwardRef, useState, useCallback } from 'react';
 import ePub, { Book, Rendition } from 'epubjs';
 import { Theme } from '../App';
 import { Note } from '../db/db';
-import type { ReaderLocationChange, ReaderPageInfo } from './readerTypes';
+import type { ReaderLocationChange, ReaderPageInfo, TextSelectionInfo } from './readerTypes';
 import { getReaderFontStack, lxgwFontFaceCss } from '../shared/fonts';
+import { extractSentence } from '../shared/spanText';
+import { vocabService } from '../services/vocabService';
+import {
+  InkRun,
+  noteKeyFromColor,
+  rectsOfRange,
+  renderInk,
+  runInBox,
+  styleInkLayer,
+} from '../shared/ink';
 
-const safeNoteColor = (value: string) => (/^#[0-9a-f]{6}$/i.test(value) ? value : '#fcd34d');
-
+/**
+ * 熟练度与笔记都改用 SVG 手绘层：
+ * CSS Highlight API 只能画直线或纯色块，画不出马克笔的毛边与浓淡。
+ * 两条通道分开出笔——熟练度是宽底色，笔记是字脚下的窄带。
+ */
 function buildEpubReaderStyle(fontSize: number, lineHeight: number, fontFamily: string, currentTheme: any) {
   return `
     ${lxgwFontFaceCss(window.location.href)}
@@ -18,10 +31,11 @@ function buildEpubReaderStyle(fontSize: number, lineHeight: number, fontFamily: 
     }
     body {
       background-color: ${currentTheme.bg} !important;
-      padding: 60px 20px 60px 20px !important;
+      padding: 28px 20px 28px 20px !important;
       margin: 0 !important;
+      position: relative !important;
     }
-    img, svg, video {
+    img, video, svg:not(#mr-ink) {
       max-width: 100% !important;
       height: auto !important;
     }
@@ -29,6 +43,178 @@ function buildEpubReaderStyle(fontSize: number, lineHeight: number, fontFamily: 
       background: ${currentTheme.text}22 !important;
     }
   `;
+}
+
+function getWordAtPoint(
+  doc: Document,
+  x: number,
+  y: number
+): { word: string; rect: DOMRect; context?: string } | null {
+  try {
+    const range = (doc as any).caretRangeFromPoint ? (doc as any).caretRangeFromPoint(x, y) : null;
+    if (!range || !range.startContainer || range.startContainer.nodeType !== Node.TEXT_NODE) return null;
+
+    const text = range.startContainer.textContent || '';
+    let offset = range.startOffset;
+
+    if (offset >= text.length || !/[a-zA-Z]/.test(text[offset])) {
+      if (offset > 0 && /[a-zA-Z]/.test(text[offset - 1])) {
+        offset = offset - 1;
+      } else {
+        return null;
+      }
+    }
+
+    let start = offset;
+    while (start > 0 && /[a-zA-Z'\u2019]/.test(text[start - 1])) {
+      start--;
+    }
+
+    let end = offset;
+    while (end < text.length && /[a-zA-Z'\u2019]/.test(text[end])) {
+      end++;
+    }
+
+    const word = text.slice(start, end).replace(/^['\u2019]|['\u2019]$/g, '');
+    if (!word || (word.length < 2 && !['a', 'i', 'A', 'I'].includes(word))) return null;
+
+    const wordRange = doc.createRange();
+    wordRange.setStart(range.startContainer, start);
+    wordRange.setEnd(range.startContainer, end);
+    const rect = wordRange.getBoundingClientRect();
+
+    // 取词所在块级元素（EPUB 的段落即使视觉跨页，DOM 里仍是完整段落）
+    const node = range.startContainer as Text;
+    const block = (node.parentElement?.closest(
+      'p,li,blockquote,div,td,h1,h2,h3,h4,h5,h6'
+    ) ?? node.parentElement) as HTMLElement | null;
+
+    let context: string | undefined;
+    if (block) {
+      try {
+        const prefix = doc.createRange();
+        prefix.selectNodeContents(block);
+        prefix.setEnd(node, start);
+        const blockOffset = prefix.toString().length;
+        context = extractSentence(
+          block.textContent || '',
+          blockOffset,
+          blockOffset + (end - start)
+        );
+      } catch {
+        context = undefined;
+      }
+    }
+
+    return { word, rect, context };
+  } catch {
+    return null;
+  }
+}
+
+function collectVocabRuns(
+  doc: Document,
+  win: Window,
+  vocabMap: Map<string, number> | undefined,
+  defaultLevels: Record<string, number> | undefined,
+  originLeft: number,
+  originTop: number
+): InkRun[] {
+  const runs: InkRun[] = [];
+
+  // 词组型生词（up-and-comers / break down）抓不到单词等级，单独扫一遍
+  const phrases: { phrase: string; level: number }[] = [];
+  vocabMap?.forEach((level, word) => {
+    if (level >= 1 && level <= 4 && word.length > 2 && /[\s-]/.test(word)) {
+      phrases.push({ phrase: word, level });
+    }
+  });
+  phrases.sort((a, b) => b.phrase.length - a.phrase.length);
+
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+  let node: Text | null;
+  let cursor = 0;
+
+  while ((node = walker.nextNode() as Text | null)) {
+    const parent = node.parentElement;
+    if (!parent || parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE') continue;
+
+    const text = node.textContent || '';
+    if (!/[a-zA-Z]{2,}/.test(text)) continue;
+
+    const cs = win.getComputedStyle(parent);
+    const fontSize = parseFloat(cs.fontSize) || 18;
+    const fontFamily = cs.fontFamily;
+    const pushRun = (range: Range, level: number) => {
+      if (level < 1 || level > 4) return;
+      const rects = rectsOfRange(range, originLeft, originTop);
+      if (!rects.length) return;
+      runs.push({
+        kind: 'vocab',
+        rects,
+        fontSize,
+        fontFamily,
+        level,
+        seed: `v${level}|${cursor++}|${text.slice(0, 12)}`,
+      });
+    };
+
+    const lowerText = text.toLowerCase();
+    const phraseRanges: { start: number; end: number; level: number }[] = [];
+
+    for (const { phrase, level } of phrases) {
+      let from = 0;
+      while (from <= lowerText.length - phrase.length) {
+        const at = lowerText.indexOf(phrase, from);
+        if (at < 0) break;
+        const end = at + phrase.length;
+        const before = at === 0 ? '' : lowerText[at - 1];
+        const after = end >= lowerText.length ? '' : lowerText[end];
+        if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) {
+          if (!phraseRanges.some((r) => at < r.end && end > r.start)) {
+            phraseRanges.push({ start: at, end, level });
+          }
+        }
+        from = at + 1;
+      }
+    }
+
+    for (const range of phraseRanges) {
+      try {
+        const r = doc.createRange();
+        r.setStart(node, range.start);
+        r.setEnd(node, range.end);
+        pushRun(r, range.level);
+      } catch {}
+    }
+
+    const regex = /[a-zA-Z]+(?:['\u2019][a-zA-Z]+)?/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = regex.exec(text)) !== null) {
+      // 落在词组范围内的单词跳过，避免和整段词组区间叠加
+      if (
+        phraseRanges.some(
+          (r) => match!.index < r.end && match!.index + match![0].length > r.start
+        )
+      ) {
+        continue;
+      }
+
+      const clean = match[0].toLowerCase();
+      const level = vocabMap?.get(clean) ?? defaultLevels?.[clean] ?? 5;
+      if (level < 1 || level > 4) continue;
+
+      try {
+        const r = doc.createRange();
+        r.setStart(node, match.index);
+        r.setEnd(node, match.index + match[0].length);
+        pushRun(r, level);
+      } catch {}
+    }
+  }
+
+  return runs;
 }
 
 export interface EpubViewerRef {
@@ -50,8 +236,12 @@ interface EpubViewerProps {
   isTwoPage?: boolean;
   initialCfi?: string;
   notes: Note[];
+  intensiveMode?: boolean;
+  vocabMap?: Map<string, number>;
+  defaultLevels?: Record<string, number>;
   onLocationChange: ReaderLocationChange;
-  onTextSelected: (selection: { cfiRange: string, text: string, x: number, y: number } | null) => void;
+  onTextSelected: (selection: TextSelectionInfo | null) => void;
+  onWordClick?: (word: string, rect: DOMRect, context?: string) => void;
   onKeyPress?: (key: string) => void;
   onReady: () => void;
   onError?: (error: unknown) => void;
@@ -65,14 +255,25 @@ interface EpubSectionPageCount {
 }
 
 const EpubViewer = forwardRef<EpubViewerRef, EpubViewerProps>(({
-  data, theme, currentTheme, fontSize, lineHeight, fontFamily = 'Source Han Serif SC', isTwoPage = false, initialCfi, notes, onLocationChange, onTextSelected, onKeyPress, onReady, onError, onTocLoaded
+  data, theme, currentTheme, fontSize, lineHeight, fontFamily = 'Source Han Serif SC', isTwoPage = false, initialCfi, notes,
+  intensiveMode = false, vocabMap, defaultLevels,
+  onLocationChange, onTextSelected, onWordClick, onKeyPress, onReady, onError, onTocLoaded
 }, ref) => {
   const viewerRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const isMounted = useRef(true);
-  const appliedNotes = useRef<Set<string>>(new Set());
+  const notesRef = useRef(notes);
+  notesRef.current = notes;
   const onKeyPressRef = useRef(onKeyPress);
+  const onWordClickRef = useRef(onWordClick);
+  onWordClickRef.current = onWordClick;
+  const intensiveModeRef = useRef(intensiveMode);
+  intensiveModeRef.current = intensiveMode;
+  const vocabMapRef = useRef(vocabMap);
+  vocabMapRef.current = vocabMap;
+  const defaultLevelsRef = useRef(defaultLevels);
+  defaultLevelsRef.current = defaultLevels;
   const pendingSeekProgressRef = useRef<number | null>(null);
   const locationsReadyRef = useRef(false);
   const pageCountsRef = useRef<Map<number, EpubSectionPageCount> | null>(null);
@@ -88,6 +289,116 @@ const EpubViewer = forwardRef<EpubViewerRef, EpubViewerProps>(({
   useEffect(() => {
     onKeyPressRef.current = onKeyPress;
   }, [onKeyPress]);
+
+  const inkRunsRef = useRef<Map<Document, InkRun[]>>(new Map());
+  const inkLayerRef = useRef<Map<Document, SVGSVGElement>>(new Map());
+
+  const ensureInkLayer = useCallback((doc: Document) => {
+    let svg = inkLayerRef.current.get(doc);
+    if (svg && svg.ownerDocument === doc && svg.isConnected) return svg;
+    svg = doc.getElementById('mr-ink') as unknown as SVGSVGElement | null;
+    if (!svg) {
+      svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('id', 'mr-ink');
+      doc.body.appendChild(svg);
+    }
+    inkLayerRef.current.set(doc, svg);
+    return svg;
+  }, []);
+
+  const paintContentInk = useCallback((c: any) => {
+    const doc: Document | undefined = c?.document;
+    const win: Window | undefined = c?.window;
+    const body = doc?.body;
+    if (!doc || !win || !body) return;
+
+    const runs = inkRunsRef.current.get(doc);
+    if (!runs) return;
+
+    const svg = ensureInkLayer(doc);
+    const docEl = doc.documentElement;
+    const dark = styleRef.current.theme === 'dark' || styleRef.current.theme === 'night';
+    styleInkLayer(
+      svg,
+      Math.max(body.scrollWidth, docEl?.scrollWidth || 0),
+      Math.max(body.scrollHeight, docEl?.scrollHeight || 0),
+      dark ? 'screen' : 'multiply'
+    );
+
+    // iframe 往往比窗口宽得多（整章按栏铺开），要按 iframe 在窗口里的可见段裁剪
+    const br = body.getBoundingClientRect();
+    const frameEl = win.frameElement as HTMLElement | null;
+    const parentWin = win.parent && win.parent !== win ? win.parent : null;
+    const pw = parentWin?.innerWidth || win.innerWidth;
+    const ph = parentWin?.innerHeight || win.innerHeight;
+    const fr = frameEl?.getBoundingClientRect();
+    const visLeft = fr ? Math.max(0, -fr.left) : 0;
+    const visTop = fr ? Math.max(0, -fr.top) : 0;
+    const visRight = fr ? Math.min(win.innerWidth, pw - fr.left) : win.innerWidth;
+    const visBottom = fr ? Math.min(win.innerHeight, ph - fr.top) : win.innerHeight;
+    const margin = 400;
+    const box = {
+      left: visLeft - br.left - margin,
+      right: visRight - br.left + margin,
+      top: visTop - br.top - margin,
+      bottom: visBottom - br.top + margin,
+    };
+    renderInk(svg, runs.filter((run) => runInBox(run, box)), doc);
+  }, [ensureInkLayer]);
+
+  const refreshContentsHighlights = useCallback(async (c: any) => {
+    const doc: Document | undefined = c?.document;
+    const win: Window | undefined = c?.window;
+    const body = doc?.body;
+    if (!doc || !win || !body) return;
+
+    const br = body.getBoundingClientRect();
+    const runs: InkRun[] = [];
+
+    // 笔记：字脚下的手绘窄带
+    for (const note of notesRef.current) {
+      try {
+        const range = renditionRef.current?.getRange(note.cfi);
+        if (!range || !range.startContainer) continue;
+        if (!doc.contains(range.startContainer)) continue;
+        const host = range.startContainer.parentElement;
+        const cs = host ? win.getComputedStyle(host) : null;
+        const rects = rectsOfRange(range, br.left, br.top);
+        if (!rects.length) continue;
+        runs.push({
+          kind: 'note',
+          rects,
+          fontSize: parseFloat(cs?.fontSize || '') || 18,
+          fontFamily: cs?.fontFamily || 'serif',
+          note: noteKeyFromColor(note.color),
+          seed: `${note.cfi}|${note.color}`,
+        });
+      } catch {
+        // 章节还没渲染时 getRange 会抛，渲染后 refreshContentsHighlights 会再来一次
+      }
+    }
+
+    // 熟练度：宽底色，5 级不出笔
+    if (intensiveModeRef.current) {
+      const text = body.textContent || '';
+      const rawWords = text.match(/[a-zA-Z]+(?:['\u2019][a-zA-Z]+)?/g) || [];
+      const uniqueWords = Array.from(new Set(rawWords.map((w: string) => w.toLowerCase()))) as string[];
+      const levels = await vocabService.getDefaultLevels(uniqueWords);
+      runs.push(...collectVocabRuns(doc, win, vocabMapRef.current, levels, br.left, br.top));
+    }
+
+    inkRunsRef.current.set(doc, runs);
+    paintContentInk(c);
+  }, [paintContentInk]);
+
+  useEffect(() => {
+    if (!renditionRef.current) return;
+    const contentsList = renditionRef.current.getContents() as any;
+    const targets = Array.isArray(contentsList) ? contentsList : contentsList ? [contentsList] : [];
+    targets.forEach((c: any) => {
+      refreshContentsHighlights(c);
+    });
+  }, [intensiveMode, vocabMap, refreshContentsHighlights]);
 
   useImperativeHandle(ref, () => ({
     next: () => {
@@ -226,9 +537,40 @@ const EpubViewer = forwardRef<EpubViewerRef, EpubViewerProps>(({
       };
       applyStyles();
 
+      const runHighlights = () => {
+        refreshContentsHighlights(contents);
+      };
+      runHighlights();
+
       // Also re-apply after a short delay (EPUB may inject its own CSS after our hook)
-      setTimeout(applyStyles, 100);
-      setTimeout(applyStyles, 500);
+      setTimeout(() => {
+        applyStyles();
+        runHighlights();
+      }, 100);
+      setTimeout(() => {
+        applyStyles();
+        runHighlights();
+      }, 500);
+
+      // Single click on word to trigger dictionary lookup in intensive mode
+      doc.addEventListener('click', (e: MouseEvent) => {
+        if (!intensiveModeRef.current) return;
+        const sel = contents.window?.getSelection?.();
+        if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
+
+        const res = getWordAtPoint(doc, e.clientX, e.clientY);
+        if (!res) return;
+
+        const iframe = contents.document?.defaultView?.frameElement;
+        const iframeRect = iframe ? iframe.getBoundingClientRect() : { left: 0, top: 0 };
+        const screenRect = new DOMRect(
+          iframeRect.left + res.rect.left,
+          iframeRect.top + res.rect.top,
+          res.rect.width,
+          res.rect.height
+        );
+        onWordClickRef.current?.(res.word, screenRect, res.context);
+      });
 
       doc.addEventListener('keyup', (e: KeyboardEvent) => {
         if (onKeyPressRef.current) onKeyPressRef.current(e.key);
@@ -252,6 +594,7 @@ const EpubViewer = forwardRef<EpubViewerRef, EpubViewerProps>(({
     });
 
     // Fix margin/double-page issue on resize
+    let resizeInkTimer: number | undefined;
     const observer = new ResizeObserver(() => {
       try {
         if (viewerRef.current) {
@@ -261,6 +604,14 @@ const EpubViewer = forwardRef<EpubViewerRef, EpubViewerProps>(({
           setViewerSize((previous) => previous.width === width && previous.height === height ? previous : { width, height });
         }
       } catch (e) {}
+      window.clearTimeout(resizeInkTimer);
+      resizeInkTimer = window.setTimeout(() => {
+        try {
+          const contents = rendition.getContents();
+          const list: any[] = Array.isArray(contents) ? contents : contents ? [contents] : [];
+          list.forEach((c) => paintContentInk(c));
+        } catch {}
+      }, 260);
     });
     observer.observe(viewerRef.current);
     setViewerSize({ width: viewerRef.current.clientWidth, height: viewerRef.current.clientHeight });
@@ -270,15 +621,65 @@ const EpubViewer = forwardRef<EpubViewerRef, EpubViewerProps>(({
       const selection = contents.window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
       const range = selection.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      const iframe = contents.document.defaultView.frameElement;
-      const iframeRect = iframe.getBoundingClientRect();
+      const rawRect = range.getBoundingClientRect();
+      const rect = (rawRect.width === 0 && rawRect.height === 0 && range.getClientRects().length > 0)
+        ? range.getClientRects()[0]
+        : rawRect;
+      const iframe = contents.document?.defaultView?.frameElement;
+      const iframeRect = iframe ? iframe.getBoundingClientRect() : { left: 0, top: 0 };
+
+      const top = iframeRect.top + rect.top;
+      const bottom = iframeRect.top + rect.bottom;
+      const left = iframeRect.left + rect.left;
+      const right = iframeRect.left + rect.right;
+      const x = left + rect.width / 2;
+      const y = top;
+
+      // 取选区所在块级元素扩成整句。selection.toString() 会折叠空白，
+      // 不能用它的长度反推偏移，必须用 Range 前缀测。
+      let context: string | undefined;
+      try {
+        const startNode = range.startContainer;
+        if (startNode.nodeType === Node.TEXT_NODE) {
+          const startEl = (startNode as Text).parentElement;
+          const block = (startEl?.closest(
+            'p,li,blockquote,div,td,h1,h2,h3,h4,h5,h6'
+          ) ?? startEl) as HTMLElement | null;
+
+          if (block) {
+            const doc = contents.document as Document;
+            const prefix = doc.createRange();
+            prefix.selectNodeContents(block);
+            prefix.setEnd(startNode, range.startOffset);
+            const blockStart = prefix.toString().length;
+
+            let blockEnd = blockStart + 1;
+            if (block.contains(range.endContainer)) {
+              const endPrefix = doc.createRange();
+              endPrefix.selectNodeContents(block);
+              endPrefix.setEnd(range.endContainer, range.endOffset);
+              blockEnd = endPrefix.toString().length;
+            }
+
+            context = extractSentence(block.textContent || '', blockStart, blockEnd);
+          }
+        }
+      } catch {
+        context = undefined;
+      }
 
       onTextSelected({
         cfiRange,
         text: selection.toString(),
-        x: iframeRect.left + rect.left + rect.width / 2,
-        y: iframeRect.top + rect.top
+        context,
+        x,
+        y,
+        top,
+        bottom,
+        left,
+        right,
+        width: rect.width,
+        height: rect.height,
       });
     });
 
@@ -355,6 +756,7 @@ const EpubViewer = forwardRef<EpubViewerRef, EpubViewerProps>(({
             }
             styleEl.textContent = buildEpubReaderStyle(fs, lh, ff, ct);
           }
+          paintContentInk(c);
         });
       } catch (e) {}
       
@@ -370,6 +772,7 @@ const EpubViewer = forwardRef<EpubViewerRef, EpubViewerProps>(({
       }
       reportLocationRef.current = null;
       observer.disconnect();
+      window.clearTimeout(resizeInkTimer);
       book.destroy();
     };
   }, [data]); // Only re-init when the actual book data changes
@@ -537,34 +940,30 @@ const EpubViewer = forwardRef<EpubViewerRef, EpubViewerProps>(({
     try {
       renditionRef.current.spread(isTwoPage ? 'auto' : 'none');
     } catch (e) {}
-  }, [theme, currentTheme, fontSize, lineHeight, fontFamily, isTwoPage]);
 
-  // Handle annotations sync
+    // 字号/行距/字体变化会重排正文，等布局落定后重算矩形再落笔
+    const timer = window.setTimeout(() => {
+      try {
+        const contents = renditionRef.current?.getContents();
+        const list: any[] = Array.isArray(contents) ? contents : contents ? [contents] : [];
+        list.forEach((c) => { void refreshContentsHighlights(c); });
+      } catch {}
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [theme, currentTheme, fontSize, lineHeight, fontFamily, isTwoPage, refreshContentsHighlights]);
+
+  // 笔记变化时重新应用下划线（不再走 annotations，避免 marks-pane 的黑框黑线）
   useEffect(() => {
-    if (!renditionRef.current) return;
     const rendition = renditionRef.current;
-    const currentCfis = new Set(notes.map(n => n.cfi));
-
-    // Remove notes that are no longer in the list
-    appliedNotes.current.forEach(cfi => {
-      if (!currentCfis.has(cfi)) {
-        try { rendition.annotations.remove(cfi, "highlight"); } catch (e) {}
-      }
-    });
-
-    // Add new notes
-    notes.forEach(note => {
-      if (!appliedNotes.current.has(note.cfi)) {
-        try {
-          rendition.annotations.highlight(note.cfi, {}, () => {}, undefined, { fill: safeNoteColor(note.color), "fill-opacity": "0.3" });
-        } catch (e) {
-          console.warn("Failed to apply highlight", e);
-        }
-      }
-    });
-
-    appliedNotes.current = currentCfis;
-  }, [notes]);
+    if (!rendition) return;
+    try {
+      const contents = rendition.getContents();
+      const list: any[] = Array.isArray(contents) ? contents : contents ? [contents] : [];
+      list.forEach((c) => { void refreshContentsHighlights(c); });
+    } catch {
+      // 忽略
+    }
+  }, [notes, refreshContentsHighlights]);
 
   return (
     <div 

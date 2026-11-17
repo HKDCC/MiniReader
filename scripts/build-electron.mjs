@@ -13,7 +13,7 @@ await esbuild.build({
   platform: 'node',
   target: 'node20',
   outfile: join(rootDir, 'dist_electron/main.js'),
-  external: ['electron'],
+  external: ['electron', 'node:sqlite'],
   format: 'cjs',
   sourcemap: false,
 });
@@ -26,6 +26,31 @@ await esbuild.build({
   target: 'node20',
   outfile: join(rootDir, 'dist_electron/preload.js'),
   external: ['electron'],
+  format: 'cjs',
+  sourcemap: false,
+});
+
+// Bundle dictEngine
+await esbuild.build({
+  entryPoints: [join(rootDir, 'electron/dictEngine.ts')],
+  bundle: true,
+  platform: 'node',
+  target: 'node20',
+  outfile: join(rootDir, 'dist_electron/dictEngine.js'),
+  external: ['electron', 'node:sqlite'],
+  format: 'cjs',
+  sourcemap: false,
+});
+
+// Bundle llmEngine (also bundled into main.js, but kept as a standalone
+// entry so scripts/test-llm-ollama.cjs can exercise it headlessly)
+await esbuild.build({
+  entryPoints: [join(rootDir, 'electron/llmEngine.ts')],
+  bundle: true,
+  platform: 'node',
+  target: 'node20',
+  outfile: join(rootDir, 'dist_electron/llmEngine.js'),
+  external: ['electron', 'node:sqlite'],
   format: 'cjs',
   sourcemap: false,
 });

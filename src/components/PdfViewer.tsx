@@ -1,13 +1,17 @@
-import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useImperativeHandle, forwardRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import { Theme } from '../App';
 import { Note } from '../db/db';
-import type { ReaderLocationChange, ReaderPageInfo } from './readerTypes';
+import type { ReaderLocationChange, ReaderPageInfo, TextSelectionInfo } from './readerTypes';
+import { extractSentence } from '../shared/spanText';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+// A new options object causes react-pdf to destroy and reload the document.
+const PDF_OPTIONS = { isEvalSupported: false, enableScripting: false };
 
 const TEXT = {
   parsing: '\u6B63\u5728\u89E3\u6790 PDF...',
@@ -18,7 +22,7 @@ function escapeHtml(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-const safeNoteColor = (value: string) => (/^#[0-9a-f]{6}$/i.test(value) ? value : '#fcd34d');
+const safeNoteColor = (value: string) => (/^#[0-9a-f]{6}$/i.test(value) ? value : '#3b82f6');
 
 interface PdfViewerRef {
   next: () => void;
@@ -44,8 +48,9 @@ interface PdfViewerProps {
   isTwoPage?: boolean;
   initialCfi?: string;
   notes: Note[];
+  intensiveMode?: boolean;
   onLocationChange: ReaderLocationChange;
-  onTextSelected: (selection: { cfiRange: string; text: string; x: number; y: number } | null) => void;
+  onTextSelected: (selection: TextSelectionInfo | null) => void;
   onKeyPress?: (key: string) => void;
   onReady: () => void;
   onError?: (error: unknown) => void;
@@ -53,7 +58,9 @@ interface PdfViewerProps {
 }
 
 const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
-  ({ data, theme, isTwoPage = false, initialCfi, notes, onLocationChange, onTextSelected, onReady, onError, onTocLoaded }, ref) => {
+  ({ data, theme, currentTheme, isTwoPage = false, initialCfi, notes, intensiveMode = false, onLocationChange, onTextSelected, onReady, onError, onTocLoaded }, ref) => {
+    // PDF.js transfers the buffer to its worker. Keep the reader's source intact.
+    const file = useMemo(() => data.slice(0), [data]);
     const [numPages, setNumPages] = useState(0);
     const [pageNumber, setPageNumber] = useState(() => {
       if (initialCfi && initialCfi.startsWith('pdf-page-')) {
@@ -211,7 +218,7 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
       pageNotes.forEach((note) => {
         const text = escapeHtml(note.text.trim());
         if (!text) return;
-        rendered = rendered.split(text).join(`<mark style="background:${safeNoteColor(note.color)};background-opacity:.45;color:inherit;border-radius:2px">${text}</mark>`);
+        rendered = rendered.split(text).join(`<mark style="background:${safeNoteColor(note.color)}3D;color:inherit;border-radius:2px">${text}</mark>`);
       });
       return rendered;
     };
@@ -248,17 +255,57 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
       }
 
       const range = selection.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
+      const rawRect = range.getBoundingClientRect();
+      const rect = (rawRect.width === 0 && rawRect.height === 0 && range.getClientRects().length > 0)
+        ? range.getClientRects()[0]
+        : rawRect;
+
+      const top = rect.top;
+      const bottom = rect.bottom;
+      const left = rect.left;
+      const right = rect.right;
+      const x = left + rect.width / 2;
+      const y = top;
+
+      // PDF 文本层是逐 text item 的 span，没有段落概念。
+      // 退而求其次：用整页文本层 + Range 前缀定位，再按句末标点扩句；
+      // 若文本层没带空格（部分 PDF 会这样），宁可留空也不给模型噪声。
+      let context: string | undefined;
+      try {
+        const startNode = range.startContainer;
+        if (startNode.nodeType === Node.TEXT_NODE) {
+          const startEl = (startNode as Text).parentElement;
+          const layer = (startEl?.closest('.react-pdf__Page__textContent') ?? startEl) as HTMLElement | null;
+          const layerText = layer?.textContent || '';
+          if (layer && layerText.length > 20 && /\s/.test(layerText.slice(0, 200))) {
+            const prefix = document.createRange();
+            prefix.selectNodeContents(layer);
+            prefix.setEnd(startNode, range.startOffset);
+            const blockStart = prefix.toString().length;
+            context = extractSentence(layerText, blockStart, blockStart + 1, 200);
+          }
+        }
+      } catch {
+        context = undefined;
+      }
+
       onTextSelected({
         cfiRange: `pdf-page-${pageNumber}-${range.startOffset}-${range.endOffset}`,
         text: selection.toString(),
-        x: rect.left + rect.width / 2,
-        y: rect.top - 10,
+        context,
+        x,
+        y,
+        top,
+        bottom,
+        left,
+        right,
+        width: rect.width,
+        height: rect.height,
       });
     };
 
     const isDarkMode = theme === 'dark' || theme === 'night';
-    const pdfBackgroundStyle = isDarkMode ? { backgroundColor: theme === 'night' ? '#000000' : '#2C2C2C' } : {};
+    const pdfBackgroundStyle = isDarkMode ? { backgroundColor: theme === 'night' ? '#000000' : currentTheme.bg } : {};
 
     const availableWidth = containerSize.width - (actualTwoPage ? 60 : 40);
     const availableHeight = containerSize.height - 40;
@@ -269,15 +316,16 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
     return (
       <div
         ref={containerRef}
-        className="w-full h-full flex justify-center items-center overflow-hidden relative"
+        className="pdf-reader w-full h-full flex justify-center items-center overflow-hidden relative"
         onMouseUp={handleMouseUp}
         style={pdfBackgroundStyle}
       >
         <Document
-          file={data}
-          options={{ isEvalSupported: false, enableScripting: false } as any}
+          file={file}
+          options={PDF_OPTIONS}
           onLoadSuccess={onDocumentLoadSuccess}
           onLoadError={(error) => onError?.(error)}
+          onSourceError={(error) => onError?.(error)}
           loading={<div className="opacity-50 font-serif animate-pulse">{TEXT.parsing}</div>}
           className="flex justify-center items-center w-full h-full"
         >
@@ -288,6 +336,8 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
                 width={fitByWidth ? targetWidth : undefined}
                 height={fitByWidth ? undefined : availableHeight}
                 onLoadSuccess={onPageLoadSuccess}
+                onLoadError={(error) => onError?.(error)}
+                onRenderError={(error) => onError?.(error)}
                 renderAnnotationLayer={false}
                 renderTextLayer
                 customTextRenderer={({ str }: { str: string }) => renderPageText(pageNumber, str)}
@@ -297,6 +347,8 @@ const PdfViewer = forwardRef<PdfViewerRef, PdfViewerProps>(
               {actualTwoPage && pageNumber + 1 <= numPages && (
                 <Page
                   pageNumber={pageNumber + 1}
+                  onLoadError={(error) => onError?.(error)}
+                  onRenderError={(error) => onError?.(error)}
                   width={fitByWidth ? targetWidth : undefined}
                   height={fitByWidth ? undefined : availableHeight}
                   renderAnnotationLayer={false}
